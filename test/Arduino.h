@@ -38,6 +38,9 @@ inline void tone(int, unsigned int, unsigned long) {}
 #ifndef OUTPUT
 #define OUTPUT 0x1
 #endif
+#ifndef INPUT_PULLUP
+#define INPUT_PULLUP 0x2
+#endif
 #ifndef A0
 #define A0 14
 #endif
@@ -46,6 +49,22 @@ inline void pinMode(int, int) {}
 inline void digitalWrite(int, int) {}
 inline int digitalRead(int) { return HIGH; }
 inline int analogRead(int) { return 1023; }
+
+// Interrupt stubs
+#ifndef CHANGE
+#define CHANGE 1
+#endif
+#ifndef RISING
+#define RISING 2
+#endif
+#ifndef FALLING
+#define FALLING 3
+#endif
+#ifndef NOT_AN_INTERRUPT
+#define NOT_AN_INTERRUPT -1
+#endif
+inline int digitalPinToInterrupt(int) { return 0; }
+inline void attachInterrupt(int, void (*)(void), int) {}
 
 // simple millis() stub that advances with calls
 inline unsigned long millis() {
@@ -63,6 +82,21 @@ inline long random(long max) {
   seed ^= seed << 5;
   return (long)(seed % (unsigned long)max);
 }
+
+// Minimal USB Serial stub for debug logs
+class USBSerial {
+public:
+  void begin(unsigned long) {}
+  void print(const char*) {}
+  void println(const char*) {}
+  void print(int) {}
+  void println(int) {}
+  void print(unsigned long) {}
+  void println(unsigned long) {}
+  void println() {}
+};
+
+static USBSerial Serial;
 
 // LED helper macros as no-ops if referenced
 #ifndef TXLED0

@@ -41,6 +41,23 @@ void setLedPattern(LedPattern p) {
   if (p != current) {
     current = p;
     patternStartMs = millis();
+    // Log LED pattern changes to verify they mirror state
+    auto name = [](LedPattern lp) -> const char* {
+      switch (lp) {
+        case PATTERN_CONNECTING: return "CONNECTING";
+        case PATTERN_WAITING: return "WAITING";
+        case PATTERN_SEEKING: return "SEEKING";
+        case PATTERN_ADVANCING: return "ADVANCING";
+        case PATTERN_RECOILING: return "RECOILING";
+        case PATTERN_TURNING_LEFT: return "TURNING_LEFT";
+        case PATTERN_TURNING_RIGHT: return "TURNING_RIGHT";
+        case PATTERN_FROZEN: return "FROZEN";
+        case PATTERN_ALERT: return "ALERT";
+      }
+      return "?";
+    };
+    Serial.print("[LED] pattern=");
+    Serial.println(name(current));
   }
 }
 
@@ -87,6 +104,11 @@ static void patternAt(unsigned long tMs, bool &txOn, bool &rxOn) {
       txOn = (tMs % 200) < 100;
       rxOn = txOn;
       break;
+    case PATTERN_ALERT:
+      // Rapid alternating flash (10 Hz), eye-catching
+      txOn = (tMs % 100) < 50;
+      rxOn = !txOn;
+      break;
   }
 }
 
@@ -101,4 +123,3 @@ void updateLeds() {
   setRx(rxOn);
 #endif
 }
-

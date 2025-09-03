@@ -9,10 +9,10 @@ enum LedPattern {
   PATTERN_RECOILING,
   PATTERN_TURNING_LEFT,
   PATTERN_TURNING_RIGHT,
-  PATTERN_FROZEN
+  PATTERN_FROZEN,
+  PATTERN_ALERT
 };
 
 void initLeds();
 void setLedPattern(LedPattern p);
 void updateLeds();
-
