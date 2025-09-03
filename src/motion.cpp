@@ -75,6 +75,28 @@ void turnRightOneTick() {
 }
 
 /**
+ * Veer left while moving forward for one control tick (gentle arc).
+ */
+void veerLeftOneTick() {
+  int16_t fast = VELOCITY;
+  int16_t slow = (VELOCITY * 3) / 5; // ~60% speed on left wheel
+  driveWheels(fast, slow);
+  delay(TICK_MS);
+  driveWheels(0, 0);
+}
+
+/**
+ * Veer right while moving forward for one control tick (gentle arc).
+ */
+void veerRightOneTick() {
+  int16_t slow = (VELOCITY * 3) / 5; // ~60% speed on right wheel
+  int16_t fast = VELOCITY;
+  driveWheels(slow, fast);
+  delay(TICK_MS);
+  driveWheels(0, 0);
+}
+
+/**
  * Immediately stop all wheel motion.
  */
 void stopAllMotors() {
