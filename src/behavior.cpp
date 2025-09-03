@@ -29,6 +29,8 @@ void initializeBehavior() {
 void updateBehavior() {
   if (millis() - lastTick < tickInterval) return;
   lastTick = millis();
+  // Keep the Create's OI alive with periodic no-op commands
+  keepAliveTick();
 
   switch (currentState) {
     case CONNECTING:
