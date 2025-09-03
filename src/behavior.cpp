@@ -2,6 +2,7 @@
 #include "motion.h"
 #include "sensors.h"
 #include "utils.h"
+#include <Arduino.h>
 
 enum State {
   CONNECTING,
