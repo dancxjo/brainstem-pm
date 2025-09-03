@@ -2,6 +2,7 @@
 #include "motion.h"
 #include "sensors.h"
 #include "utils.h"
+#include "leds.h"
 #include <Arduino.h>
 
 enum State {
@@ -31,6 +32,18 @@ void updateBehavior() {
   lastTick = millis();
   // Keep the Create's OI alive with periodic no-op commands
   keepAliveTick();
+
+  // Reflect current state on LEDs each tick
+  switch (currentState) {
+    case CONNECTING:     setLedPattern(PATTERN_CONNECTING); break;
+    case WAITING:        setLedPattern(PATTERN_WAITING); break;
+    case SEEKING:        setLedPattern(PATTERN_SEEKING); break;
+    case ADVANCING:      setLedPattern(PATTERN_ADVANCING); break;
+    case RECOILING:      setLedPattern(PATTERN_RECOILING); break;
+    case TURNING_LEFT:   setLedPattern(PATTERN_TURNING_LEFT); break;
+    case TURNING_RIGHT:  setLedPattern(PATTERN_TURNING_RIGHT); break;
+    case FROZEN:         setLedPattern(PATTERN_FROZEN); break;
+  }
 
   switch (currentState) {
     case CONNECTING:
