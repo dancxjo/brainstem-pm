@@ -77,6 +77,37 @@ static uint32_t ledMask = 0;
 static float vx_target = 0.0f, wz_target = 0.0f;
 static float vx_actual = 0.0f, wz_actual = 0.0f;
 
+// Differential drive kinematics (approx track width in meters)
+static float param_track_m = 0.26f; // Create 1 ~0.26 m wheel separation
+
+static inline void oi_drive_direct(int16_t right_mm_s, int16_t left_mm_s) {
+  const uint8_t OI_DRIVE_DIRECT = 145;
+  CREATE_SERIAL.write(OI_DRIVE_DIRECT);
+  CREATE_SERIAL.write((uint8_t)((right_mm_s >> 8) & 0xFF));
+  CREATE_SERIAL.write((uint8_t)(right_mm_s & 0xFF));
+  CREATE_SERIAL.write((uint8_t)((left_mm_s >> 8) & 0xFF));
+  CREATE_SERIAL.write((uint8_t)(left_mm_s & 0xFF));
+}
+
+static inline int16_t clamp_mm_s(float v_mm_s) {
+  // OI limits velocity to about +/-500 mm/s
+  if (v_mm_s > 500.0f) v_mm_s = 500.0f;
+  if (v_mm_s < -500.0f) v_mm_s = -500.0f;
+  // Round to nearest integer
+  return (int16_t)(v_mm_s >= 0 ? (v_mm_s + 0.5f) : (v_mm_s - 0.5f));
+}
+
+static void applyDriveFromTwist(float vx_mps, float wz_rad_s) {
+  // Map twist to wheel linear speeds: v_r = vx + wz * (track/2), v_l = vx - wz * (track/2)
+  float half = 0.5f * param_track_m;
+  float v_r_mps = vx_mps + wz_rad_s * half;
+  float v_l_mps = vx_mps - wz_rad_s * half;
+  int16_t r = clamp_mm_s(v_r_mps * 1000.0f);
+  int16_t l = clamp_mm_s(v_l_mps * 1000.0f);
+  oi_drive_direct(r, l);
+  feedRobotWatchdog();
+}
+
 // Odometry
 static float odom_x = 0.0f, odom_y = 0.0f, odom_th = 0.0f;
 static unsigned long lastOdomMs = 0;
@@ -491,6 +522,9 @@ static void controlTick() {
   vx_actual = stepToward(vx_actual, vx_goal, maxDv);
   wz_actual = stepToward(wz_actual, wz_goal, maxDw);
 
+  // Send drive command to Create OI
+  applyDriveFromTwist(vx_actual, wz_actual);
+
   // STATE select
   if (!linkUp) publish_state(PROTO_STATE_LINKDOWN);
   else if (estopActive) publish_state(PROTO_STATE_ESTOP);
@@ -590,6 +624,8 @@ void loop() {
 
   // 4) Drive LED patterns non-blocking
   updateLeds();
+  // Always enforce motion watchdog in both modes
+  enforceRobotWatchdog();
 }
 
 #else // BRAINSTEM_UART
