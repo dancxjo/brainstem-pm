@@ -57,27 +57,11 @@ static bool cachedWall = false;
 static uint8_t lastButtons = 0;
 static volatile bool btnPlayEdge = false;
 static volatile bool btnAdvEdge = false;
-static uint16_t badChecksumCount = 0;
-static unsigned long lastRecoverMs = 0;
+// (recovery disabled in minimal build)
 
-static void recoverStreamIfNeeded() {
-  unsigned long now = millis();
-  if (badChecksumCount >= 8 && (now - lastStreamMs) > 250) {
-    // Too many errors with no valid frame recently: reconfigure stream and poke OI
-    Serial.println("[SENS] stream auto-recover: reconfig + pokeOI");
-    pokeOI();
-    // Reconfigure stream list and resume
-    CREATE_SERIAL.write(OI_PAUSE); CREATE_SERIAL.write((uint8_t)0);
-    CREATE_SERIAL.write(OI_STREAM);
-    CREATE_SERIAL.write((uint8_t)(sizeof(requestedPackets)));
-    for (uint8_t i = 0; i < sizeof(requestedPackets); ++i) CREATE_SERIAL.write(requestedPackets[i]);
-    CREATE_SERIAL.write(OI_PAUSE); CREATE_SERIAL.write((uint8_t)1);
-    // Reset parser state and counters
-    spState = WAIT_HEADER; spLen = 0; spRead = 0; badChecksumCount = 0; lastRecoverMs = now;
-    // Drain any residual bytes quickly
-    while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
-  }
-}
+// (frame-based parser removed)
+
+// (recovery disabled)
 // Previous snapshot for change-detect logging
 static bool prevBumpLeft = false, prevBumpRight = false;
 static bool prevCliffL = false, prevCliffFL = false, prevCliffFR = false, prevCliffR = false;
@@ -104,7 +88,9 @@ void beginSensorStream() {
   currentId = 0;
   streamPaused = false;
   while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
-  // stream started
+#ifdef ENABLE_DEBUG
+  Serial.println("[SENS] OI stream started (7,9,10,11,12,18,8)");
+#endif
 }
 
 void pauseSensorStream() {
@@ -113,6 +99,9 @@ void pauseSensorStream() {
     CREATE_SERIAL.write(OI_PAUSE);
     CREATE_SERIAL.write((uint8_t)0);
     streamPaused = true;
+#ifdef ENABLE_DEBUG
+    Serial.println("[SENS] stream PAUSE");
+#endif
   }
 }
 
@@ -122,6 +111,9 @@ void resumeSensorStream() {
     CREATE_SERIAL.write(OI_PAUSE);
     CREATE_SERIAL.write((uint8_t)1);
     streamPaused = false;
+#ifdef ENABLE_DEBUG
+    Serial.println("[SENS] stream RESUME");
+#endif
   }
 }
 
@@ -164,7 +156,17 @@ void updateSensorStream() {
                      (cachedCliffFR != prevCliffFR) || (cachedCliffR != prevCliffR) ||
                      (cachedWall != prevWall) || (lastButtons != prevButtons);
       if (changed) {
-        // log suppressed to save flash
+#ifdef ENABLE_DEBUG
+        Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
+        Serial.print(" R="); Serial.print((int)cachedBumpRight);
+        Serial.print(" cliffs=");
+        Serial.print((int)cachedCliffL); Serial.print(",");
+        Serial.print((int)cachedCliffFL); Serial.print(",");
+        Serial.print((int)cachedCliffFR); Serial.print(",");
+        Serial.print((int)cachedCliffR);
+        Serial.print(" wall="); Serial.print((int)cachedWall);
+        Serial.print(" btn="); Serial.println((int)lastButtons);
+#endif
       }
       prevBumpLeft = cachedBumpLeft; prevBumpRight = cachedBumpRight;
       prevCliffL = cachedCliffL; prevCliffFL = cachedCliffFL; prevCliffFR = cachedCliffFR; prevCliffR = cachedCliffR;
@@ -189,8 +191,14 @@ void initSensors() {
   int irq = digitalPinToInterrupt(BUMPER_PIN);
   if (irq != NOT_AN_INTERRUPT) {
     attachInterrupt(irq, bumperIsr, CHANGE);
+#ifdef ENABLE_DEBUG
+    Serial.print("[SENS] Bumper ISR attached on pin ");
+    Serial.println(BUMPER_PIN);
+#endif
   } else {
-    // no interrupt available
+#ifdef ENABLE_DEBUG
+    Serial.println("[SENS] Bumper ISR not available on this pin");
+#endif
   }
 #  endif
 #endif
@@ -205,21 +213,34 @@ int scanEnvironment() {
 bool bumperTriggered() {
   bool any = (cachedBumpLeft || cachedBumpRight);
   if (any) {
-    // log suppressed
+#ifdef ENABLE_DEBUG
+    Serial.print("[SENS] bumperTriggered via stream L=");
+    Serial.print((int)cachedBumpLeft);
+    Serial.print(" R=");
+    Serial.println((int)cachedBumpRight);
+#endif
   }
   return any;
 }
 
 bool cliffDetected() {
   bool any = (cachedCliffL || cachedCliffFL || cachedCliffFR || cachedCliffR);
-  if (any) { /* log suppressed */ }
+  if (any) {
+#ifdef ENABLE_DEBUG
+    Serial.println("[SENS] cliff detected via stream");
+#endif
+  }
   return any;
 }
 
 bool bumperEventTriggeredAndClear() {
   bool was = bumperEventFlag;
   bumperEventFlag = false;
-  if (was) { /* log suppressed */ }
+  if (was) {
+#ifdef ENABLE_DEBUG
+    Serial.println("[SENS] bumper ISR event");
+#endif
+  }
   return was;
 }
 

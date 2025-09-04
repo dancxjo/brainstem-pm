@@ -4,7 +4,6 @@
 
 #ifdef BRAINSTEM_UART
 #include "proto.h"
-#include "behavior.h"
 #include "sensors.h"
 #include "motion.h"
 #include "utils.h"
@@ -35,9 +34,6 @@ static char lineBuf[64];
 static uint16_t lineLen = 0;
 static unsigned long last_uart_ms = 0;
 static bool linkUp = false;
-// Forebrain vs Autonomous mode switching
-static bool modeForebrain = false;      // true=FOREBRAIN, false=AUTONOMOUS
-static bool autonomousInit = false;     // one-time init guard
 static const char* curModeState = nullptr; // edge-dedup for STATE mode telemetry
 
 // Forward declare tx_send so helpers can log before its definition
@@ -289,14 +285,7 @@ static void publish_time() { char b[24]; snprintf(b, sizeof(b), "TIME,%lu", (uns
 static void publish_odom() { char b[96]; snprintf(b, sizeof(b), "ODOM,%.3f,%.3f,%.3f,%.3f,%.3f,%lu", (double)odom_x,(double)odom_y,(double)odom_th,(double)vx_actual,(double)wz_actual,(unsigned long)lastTwistSeq); tx_send(1,b);} 
 static void publish_bat() { char b[48]; snprintf(b,sizeof(b),"BAT,%u,%u,%u", (unsigned)batt_mV, (unsigned)batt_pct, (unsigned)batt_chg); tx_send(1,b); }
 
-static void setLedModeFromState() {
-  if (estopActive) setLedPattern(PATTERN_ALERT);
-  else if (millis() < reflexUntilMs) setLedPattern(PATTERN_RECOILING);
-  else if (!linkUp) setLedPattern(PATTERN_SEEKING);
-  else if (stale) setLedPattern(PATTERN_SEEKING);
-  else if (fabs(vx_actual) > 1e-3f || fabs(wz_actual) > 1e-3f) setLedPattern(PATTERN_ADVANCING);
-  else setLedPattern(PATTERN_WAITING);
-}
+// setLedModeFromState removed
 
 static void recoil() {
   reflexUntilMs = millis() + 250;
@@ -449,69 +438,7 @@ static void pollUart(bool allowHandle) {
     }
   }
 }
-
-static void pollCreateSensors() {
-  // Bump + wheel drop (packet 7)
-  uint8_t b7=0; if (oi_read_u8(7, b7)) {
-    uint8_t bumpMask = 0;
-    if (b7 & 0x02) bumpMask |= PROTO_MASK_LEFT;
-    if (b7 & 0x01) bumpMask |= PROTO_MASK_RIGHT;
-    bool wheel = (b7 & 0x0C) != 0; // either wheel drop
-    if (bumpMask && (bumpMask & ~prevBumpMask)) { publish_bump(bumpMask & ~prevBumpMask); publish_startle("bump", bumpMask & ~prevBumpMask); recoil(); }
-    prevBumpMask = bumpMask;
-    if (wheel && !wheelDropHazard) { wheelDropHazard = true; estopActive = true; publish_estop(true); publish_state(PROTO_STATE_ESTOP); }
-    if (!wheel && wheelDropHazard) { wheelDropHazard = false; }
-  }
-  // Cliff sensors (9..12), treat left/right mask
-  uint8_t c9=0,c10=0,c11=0,c12=0; bool ok9=oi_read_u8(9,c9), ok10=oi_read_u8(10,c10), ok11=oi_read_u8(11,c11), ok12=oi_read_u8(12,c12);
-  if (ok9||ok10||ok11||ok12) {
-    uint8_t cliffMask=0; if (c9||c10) cliffMask |= PROTO_MASK_LEFT; if (c11||c12) cliffMask |= PROTO_MASK_RIGHT;
-    uint8_t rise = cliffMask & ~prevCliffMask; if (rise) { publish_cliff(rise); publish_startle("cliff", rise); recoil(); playCliffWhoa(); }
-    prevCliffMask = cliffMask;
-  }
-  // Odom from distance (19 mm) and angle (20 deg)
-  int16_t dmm=0, deg=0; bool okd = oi_read_i16(19,dmm); bool oka = oi_read_i16(20,deg);
-  if (okd || oka) {
-    float d = (float)dmm / 1000.0f; float dth = (float)deg * (PI/180.0f);
-    float th_mid = odom_th + 0.5f * dth;
-    odom_x += d * cosf(th_mid);
-    odom_y += d * sinf(th_mid);
-    odom_th += dth;
-  }
-  // Battery/charging (1 Hz)
-  if (millis() - lastBattMs >= 1000) {
-    lastBattMs = millis();
-    uint8_t chg=0; int16_t mv=0; int16_t charge=0; int16_t cap=0;
-    if (oi_read_u8(21, chg)) batt_chg = chg;
-    if (oi_read_i16(22, mv)) batt_mV = (uint16_t)mv;
-    if (oi_read_i16(25, charge) && oi_read_i16(26, cap) && cap>0) {
-      int pct = (int)((long)charge * 100L / (long)cap);
-      if (pct < 0) { pct = 0; }
-      if (pct > 100) { pct = 100; }
-      batt_pct = (uint8_t)pct;
-    }
-    publish_bat();
-    static bool lowBatNotified = false;
-    if (batt_pct <= 15 && !lowBatNotified) { playLowBatteryTone(); lowBatNotified = true; }
-    if (batt_pct >= 20 && lowBatNotified) { lowBatNotified = false; }
-  }
-
-  // Buttons (packet 18): Play -> ESTOP, Advance -> toggle wall-follow side
-  uint8_t btn=0; static uint8_t prevBtn=0; if (oi_read_u8(18, btn)) {
-    uint8_t rise = btn & ~prevBtn;
-    prevBtn = btn;
-    if (rise & 0x01) {
-      // Play button: engage ESTOP immediately
-      estopActive = true; safetyEnabled = false; publish_estop(true); publish_state(PROTO_STATE_ESTOP);
-      setLedPattern(PATTERN_ALERT); stopAllMotors();
-    }
-    if (rise & 0x04) {
-      // Advance (fast forward): toggle wall-follow side sensibly
-      toggleWallFollowSide();
-      log_msg(2, "button:advance toggle wall-follow side");
-    }
-  }
-}
+// pollCreateSensors removed
 
 static void computeAndPublishRates(unsigned long now) {
   // ODOM rate
@@ -577,7 +504,7 @@ static void controlTick() {
   else if (fabs(vx_actual) > 1e-3f || fabs(wz_actual) > 1e-3f) publish_state(PROTO_STATE_TELEOP);
   else publish_state(PROTO_STATE_IDLE);
 
-  setLedModeFromState();
+  // setLedModeFromState(); // LED policy handled in loop()
   computeAndPublishRates(now);
 }
 
@@ -585,91 +512,54 @@ void setup() {
   Serial.begin(115200);
   unsigned long start = millis();
   while (!Serial && millis() - start < 200) { /* wait up to 200ms */ }
-  // Init Create OI for sensor reads only
-  CREATE_SERIAL.begin(57600);
-  delay(50);
-  CREATE_SERIAL.write(OI_START);
-  // Create 1: operate in FULL for consistent teleop control and stream access
-  CREATE_SERIAL.write(OI_FULL);
-
+  // Initialize Create OI and enter FULL mode; start sensor stream
+  initConnection();
+  beginSensorStream();
   for (uint8_t i=0;i<MAX_RANGE_IDS;i++){ rangeValid[i]=false; rangeIds[i]=0; rangeVals[i]=NAN; }
-  last_uart_ms = millis(); linkUp=false; modeForebrain = false; autonomousInit = false; curModeState = nullptr;
+  last_uart_ms = millis(); linkUp=false; curModeState = nullptr;
   tx_last_ms = millis(); tx_tokens = (float)param_tx_bytes_per_s; // allow initial burst
   initLeds();
   publish_hello();
   publish_health_boot();
-  playStartupJingle();
-  // Default to AUTONOMOUS mode until a forebrain appears
-  initializeBehavior();
-  autonomousInit = true;
-  publish_mode_state(PROTO_STATE_AUTONOMOUS);
+  publish_mode_state(PROTO_STATE_FOREBRAIN);
 }
 
 void loop() {
-  // 1) Always poll UART first (count activity even if not handling commands)
-  pollUart(modeForebrain /*allowHandle*/);
+  // 1) Poll USB serial and handle commands
+  pollUart(true);
 
-  // 2) Mode manager: switch between FOREBRAIN and AUTONOMOUS based on UART activity
   unsigned long now = millis();
-  bool connectedNow = (now - last_uart_ms < 2000);
-  if (connectedNow && !modeForebrain) {
-    // Transition AUTONOMOUS -> FOREBRAIN
-    modeForebrain = true;
-    // Stop any autonomous motion and pause sensor stream
-    stopAllMotors();
-    pauseSensorStream();
-    // Clear any stale TWIST targets
-    vx_target = 0.0f; wz_target = 0.0f; stale = true; staleAnnounced = false;
-    // Announce link up if needed and mode switch
-    if (!linkUp) { linkUp = true; publish_link(1); }
-    publish_mode_state(PROTO_STATE_FOREBRAIN);
-    playForebrainTrill();
-  } else if (!connectedNow && modeForebrain) {
-    // Transition FOREBRAIN -> AUTONOMOUS (seamless fallback)
-    modeForebrain = false;
-    // Safe stop on handover
-    vx_target = 0.0f; wz_target = 0.0f; stopAllMotors();
-    if (linkUp) { linkUp = false; publish_link(0); }
-    publish_mode_state(PROTO_STATE_AUTONOMOUS);
-    playLonelyTune();
-    // Ensure autonomous stack initialized
-    if (!autonomousInit) { initializeBehavior(); autonomousInit = true; }
-  }
+  // 2) Keep OI alive and run control tick
+  keepAliveTick();
+  if (now - lastTickMs >= CONTROL_DT_MS) { lastTickMs = now; controlTick(); }
 
-  if (modeForebrain) {
-    // 3) Forebrain-connected: poll Create sensors and run UART control loop
-    pollCreateSensors();
-    if (now - lastTickMs >= CONTROL_DT_MS) {
-      lastTickMs = now;
-      controlTick();
-    }
-    // Idle chirp in forebrain mode if robot is idle for a long while
-    static unsigned long lastIdleChirpMs = 0;
-    if ((curState && strcmp(curState, PROTO_STATE_IDLE) == 0) && linkUp) {
-      if (now - lastIdleChirpMs > 30000UL) { playIdleChirp(); lastIdleChirpMs = now; }
-    } else {
-      if (now - lastIdleChirpMs > 60000UL) lastIdleChirpMs = now; // avoid wrap
-    }
+  // 3) Maintain sensor stream and attempt reconnects
+  updateSensorStream();
+  static unsigned long lastReconnectMs = 0;
+  if (!oiConnected() && (now - lastReconnectMs > 1000)) { pokeOI(); beginSensorStream(); lastReconnectMs = now; }
+
+  // 4) LED policy: left=robot OI, right=USB client
+  bool robotUp = oiConnected();
+  bool usbUp = (now - last_uart_ms < 2000);
+  static bool prevRobot=false, prevUsb=false; static unsigned long robotEdgeMs=0, usbEdgeMs=0;
+  if (robotUp != prevRobot) { robotEdgeMs = now; prevRobot = robotUp; }
+  if (usbUp != prevUsb) { usbEdgeMs = now; prevUsb = usbUp; }
+  const unsigned long FAST_BLINK_MS = 1000;
+  if (!robotUp) {
+    setLedPattern(PATTERN_SEEKING); // left slow, right off
+  } else if (!usbUp) {
+    setLedPattern(PATTERN_SEEKING_RIGHT); // right slow, left off
   } else {
-    // 3) Autonomous: stream sensors + behavior FSM + safety watchdog
-    updateSensorStream();
-    // Local estop via Play/Advance buttons
-    static bool autoEstop = false;
-    if (playButtonPressedAndClear()) { autoEstop = true; }
-    if (advanceButtonPressedAndClear()) { autoEstop = false; }
-    if (autoEstop || bumperEventTriggeredAndClear() || bumperTriggered() || cliffDetected()) {
-      stopAllMotors();
-      setLedPattern(PATTERN_ALERT);
-    }
-    if (!autoEstop) {
-      updateBehavior();
-    }
-    enforceRobotWatchdog();
+    bool robotJust = (now - robotEdgeMs) < FAST_BLINK_MS;
+    bool usbJust = (now - usbEdgeMs) < FAST_BLINK_MS;
+    if (robotJust && usbJust) setLedPattern(PATTERN_ALERT); // alternate both briefly
+    else if (robotJust) setLedPattern(PATTERN_TURNING_LEFT); // left fast
+    else if (usbJust) setLedPattern(PATTERN_TURNING_RIGHT); // right fast
+    else setLedPattern(PATTERN_BOTH_SOLID); // both solid when fully up
   }
 
-  // 4) Drive LED patterns non-blocking
+  // 5) Update LEDs and watchdog
   updateLeds();
-  // Always enforce motion watchdog in both modes
   enforceRobotWatchdog();
 }
 

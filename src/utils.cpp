@@ -86,7 +86,12 @@ void feedRobotWatchdog() {
 void enforceRobotWatchdog() {
   unsigned long now = millis();
   if ((now - lastRobotWatchdogMs) > ROBOT_WATCHDOG_TIMEOUT_MS) {
-    if (!watchdogTripped) { watchdogTripped = true; }
+    if (!watchdogTripped) {
+#ifdef ENABLE_DEBUG
+      Serial.println("[WDOG] Motion watchdog expired; forcing STOP");
+#endif
+      watchdogTripped = true;
+    }
     // Force a stop drive repeatedly as long as expired
     writeHighLow(OI_DRIVE, 0, 0);
   } else {
@@ -112,6 +117,16 @@ void turnRandomly() {
     turnRightOneTick();
     delay(200);
   }
+}
+
+void pokeOI() {
+  // Minimal, repeatable handshake to wake OI and enter FULL mode
+  CREATE_SERIAL.write(OI_START);
+  delay(20);
+  CREATE_SERIAL.write(OI_FULL);
+  delay(20);
+  // benign drive to keep things alive
+  writeHighLow(OI_DRIVE, 0, 0);
 }
 
 #ifdef ENABLE_TUNES
@@ -204,16 +219,6 @@ void playStateSong(uint8_t id) {
       break;
     }
   }
-}
-
-void pokeOI() {
-  // Minimal, repeatable handshake to wake OI and enter FULL mode
-  CREATE_SERIAL.write(OI_START);
-  delay(20);
-  CREATE_SERIAL.write(OI_FULL);
-  delay(20);
-  // benign drive to keep things alive
-  writeHighLow(OI_DRIVE, 0, 0);
 }
 
 void playStartupJingle() {

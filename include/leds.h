@@ -10,7 +10,9 @@ enum LedPattern {
   PATTERN_TURNING_LEFT,
   PATTERN_TURNING_RIGHT,
   PATTERN_FROZEN,
-  PATTERN_ALERT
+  PATTERN_ALERT,
+  PATTERN_SEEKING_RIGHT,   // RX slow blink, TX off
+  PATTERN_BOTH_SOLID       // both LEDs solid on
 };
 
 void initLeds();

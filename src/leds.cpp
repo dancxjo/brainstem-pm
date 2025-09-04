@@ -109,6 +109,14 @@ static void patternAt(unsigned long tMs, bool &txOn, bool &rxOn) {
       txOn = (tMs % 100) < 50;
       rxOn = !txOn;
       break;
+    case PATTERN_SEEKING_RIGHT:
+      // RX slow blink 1 Hz, TX off
+      txOn = false;
+      rxOn = (tMs % 1000) < 500;
+      break;
+    case PATTERN_BOTH_SOLID:
+      txOn = true; rxOn = true;
+      break;
   }
 }
 
