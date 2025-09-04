@@ -115,6 +115,7 @@
           try {
             const m = JSON.parse(ev.data);
             if (m.type === 'rx' && m.line) { log(m.line); }
+            if (m.type === 'tx' && m.line) { log('>> ' + m.line); }
             if (m.type === 'hello') { log(`# serial=${m.serial} baud=${m.baud}`); }
           } catch {
             // fall back to raw line
@@ -126,7 +127,11 @@
       }
       connect();
 
-      const send = (obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
+      const send = (obj) => {
+        // Client-side debug of outbound intent
+        try { log('>> ' + JSON.stringify(obj)); } catch {}
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+      };
 
       function computeTwist() {
         const vmax = +vmaxEl.value;

@@ -115,6 +115,12 @@ class TeleopServer:
         self.serial = BrainstemSerial(serial_dev, baud)
         self.ws_clients: Set[web.WebSocketResponse] = set()
         self.seq = 1
+        # Debug/health
+        self.tx_count = 0
+        self.rx_count = 0
+        self.last_tx = None  # type: Optional[str]
+        self.last_rx = None  # type: Optional[str]
+        self.started_ts = time.time()
 
     async def start(self):
         await self.serial.open()
@@ -131,6 +137,7 @@ class TeleopServer:
             ws = web.WebSocketResponse(heartbeat=25.0)
             await ws.prepare(request)
             self.ws_clients.add(ws)
+            print("[teleop] ws connected; total=", len(self.ws_clients))
             # Send hello with port info
             await ws.send_json({"type": "hello", "serial": self.serial.dev, "baud": self.serial.baud})
             try:
@@ -141,6 +148,7 @@ class TeleopServer:
                         break
             finally:
                 self.ws_clients.discard(ws)
+                print("[teleop] ws disconnected; total=", len(self.ws_clients))
             return ws
 
         @r.get("/healthz")
@@ -155,6 +163,20 @@ class TeleopServer:
                 raise web.HTTPNotFound()
             return web.FileResponse(p)
 
+        @r.get("/status")
+        async def status(request):
+            return web.json_response({
+                "ok": True,
+                "serial": self.serial.dev,
+                "baud": self.serial.baud,
+                "ws_clients": len(self.ws_clients),
+                "tx_count": self.tx_count,
+                "rx_count": self.rx_count,
+                "last_tx": self.last_tx,
+                "last_rx": self.last_rx,
+                "uptime_s": int(time.time() - self.started_ts),
+            })
+
         return r
 
     async def handle_msg(self, ws: web.WebSocketResponse, data: str):
@@ -168,23 +190,74 @@ class TeleopServer:
             wz = float(msg.get("wz", 0.0))
             self.seq = (self.seq + 1) & 0xFFFFFFFF
             line = f"TWIST,{vx:.3f},{wz:.3f},{self.seq}"
-            await self.serial.write_line(line)
+            print(f"[teleop] ws→serial: {line}")
+            try:
+                await self.serial.write_line(line)
+                self.tx_count += 1
+                self.last_tx = line
+            finally:
+                # Fan out TX echo for UI logs
+                payload = json.dumps({"type": "tx", "line": line})
+                for w in list(self.ws_clients):
+                    try:
+                        await w.send_str(payload)
+                    except Exception:
+                        pass
         elif t == "safe":
             v = 1 if bool(msg.get("enable", True)) else 0
-            await self.serial.write_line(f"SAFE,{v}")
+            line = f"SAFE,{v}"
+            print(f"[teleop] ws→serial: {line}")
+            try:
+                await self.serial.write_line(line)
+                self.tx_count += 1
+                self.last_tx = line
+            finally:
+                payload = json.dumps({"type": "tx", "line": line})
+                for w in list(self.ws_clients):
+                    try:
+                        await w.send_str(payload)
+                    except Exception:
+                        pass
         elif t == "ping":
             self.seq = (self.seq + 1) & 0xFFFFFFFF
-            await self.serial.write_line(f"PING,{self.seq}")
+            line = f"PING,{self.seq}"
+            print(f"[teleop] ws→serial: {line}")
+            try:
+                await self.serial.write_line(line)
+                self.tx_count += 1
+                self.last_tx = line
+            finally:
+                payload = json.dumps({"type": "tx", "line": line})
+                for w in list(self.ws_clients):
+                    try:
+                        await w.send_str(payload)
+                    except Exception:
+                        pass
         elif t == "led":
             try:
                 mask = int(msg.get("mask", 0))
             except Exception:
                 mask = 0
-            await self.serial.write_line(f"LED,{mask}")
+            line = f"LED,{mask}"
+            print(f"[teleop] ws→serial: {line}")
+            try:
+                await self.serial.write_line(line)
+                self.tx_count += 1
+                self.last_tx = line
+            finally:
+                payload = json.dumps({"type": "tx", "line": line})
+                for w in list(self.ws_clients):
+                    try:
+                        await w.send_str(payload)
+                    except Exception:
+                        pass
 
     async def telemetry_task(self):
         # Read MCU lines and fan out to any clients
         async for line in self.serial.read_lines():
+            print(f"[teleop] serial→ws: {line}")
+            self.rx_count += 1
+            self.last_rx = line
             if not self.ws_clients:
                 continue
             dead = []
@@ -245,4 +318,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

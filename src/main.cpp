@@ -285,6 +285,12 @@ static void handleTwist(char* args) {
   lastTwistSeq = seq; lastTwistMs = millis(); stale=false; staleAnnounced=false;
   vx_target = vx; wz_target = wz; if (millis() < hesitateUntilMs) hesitateUntilMs=0;
   publish_state(PROTO_STATE_TELEOP);
+  // Debug ACK to trace inbound commands
+  {
+    char b[64];
+    snprintf(b, sizeof(b), "ACK,TWIST,%.3f,%.3f,%lu", (double)vx, (double)wz, (unsigned long)seq);
+    tx_send(0, b);
+  }
 }
 static void handleSafe(char* args) {
   if(!args||!*args){ tx_send(0,"ERR,parse,arity"); return; }
@@ -295,6 +301,7 @@ static void handleSafe(char* args) {
     setLedPattern(PATTERN_ALERT);
     playEstopAlarmSad();
   }
+  { char b[24]; snprintf(b, sizeof(b), "ACK,SAFE,%u", (unsigned)(v!=0)); tx_send(0, b); }
 }
 static void handleLed(char* args) { uint32_t m=0; if(args) m=strtoul(args,nullptr,10); ledMask=m; }
 static void handlePing(char* args){ if(!args){ tx_send(0,"ERR,parse,arity"); return;} uint32_t s; if(!parse_uint(args,s)){ tx_send(0,"ERR,parse,num"); return;} publish_pong(s); }
