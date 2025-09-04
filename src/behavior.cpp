@@ -178,7 +178,7 @@ void updateBehavior() {
       stopAllMotors();
       if (!oiConnected()) { enterState(CONNECTING); break; }
       delayBriefly();
-      enterState(WALL_FOLLOWING);
+      // enterState(WAITING); // remain in WAITING
       break;
 
     case WALL_FOLLOWING: {
