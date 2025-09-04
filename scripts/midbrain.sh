@@ -110,6 +110,9 @@ main() {
     estop)
       echo "[midbrain] ESTOP" >&2
       send_line "$dev" "SAFE,0"
+      # Immediately stop all motion to prevent unintended movement
+      local seq=$(( $(date +%s) % 1000000 ))
+      send_line "$dev" "TWIST,0.0,0.0,$seq"
       ;;
     resume)
       echo "[midbrain] RESUME" >&2

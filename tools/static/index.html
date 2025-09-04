@@ -1,0 +1,157 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Brainstem Teleop</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 20px; }
+      .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .hud { margin-top: 12px; padding: 8px; background: #f6f6f6; border-radius: 6px; }
+      .keys { font-family: monospace; padding: 4px 8px; background: #eee; border-radius: 4px; }
+      .pad { display: grid; grid-template-columns: 60px 60px 60px; grid-template-rows: 60px 60px 60px; gap: 6px; margin: 10px 0; }
+      .pad div { background: #fafafa; border: 1px solid #ddd; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+      .on { background: #cdeffd; border-color: #7fd1f6; }
+      #log { height: 180px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; background: #111; color: #aee; padding: 8px; border-radius: 6px; }
+      button { padding: 6px 10px; }
+      input[type=range] { width: 200px; }
+      .small { color: #666; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h2>Brainstem Teleop</h2>
+    <div class="hud">
+      <div>Open this page locally at <span class="keys">http://localhost:2525</span>. Use arrow keys to drive:</div>
+      <ul>
+        <li><span class="keys">↑</span> forward, <span class="keys">↓</span> reverse, <span class="keys">←</span>/<span class="keys">→</span> turn</li>
+        <li><span class="keys">Space</span> stop; <span class="keys">S</span> safe-enable (clear ESTOP); <span class="keys">E</span> ESTOP</li>
+      </ul>
+    </div>
+
+    <div class="row">
+      <label>Max linear (m/s): <input id="vmax" type="range" min="0.05" max="0.6" value="0.25" step="0.05"/> <span id="vmaxv">0.25</span></label>
+      <label>Max angular (rad/s): <input id="wmax" type="range" min="0.5" max="6.0" value="2.0" step="0.5"/> <span id="wmaxv">2.0</span></label>
+      <button id="btnStop">Stop</button>
+      <button id="btnSafe">SAFE=1</button>
+      <button id="btnEstop">ESTOP (SAFE=0)</button>
+    </div>
+
+    <div class="pad" id="pad">
+      <div></div>
+      <div id="kUp">↑</div>
+      <div></div>
+      <div id="kLeft">←</div>
+      <div></div>
+      <div id="kRight">→</div>
+      <div></div>
+      <div id="kDown">↓</div>
+      <div></div>
+    </div>
+
+    <div class="small" id="conn">Connecting…</div>
+    <pre id="log"></pre>
+
+    <script>
+      const log = (s) => {
+        const el = document.getElementById('log');
+        el.textContent += s + "\n";
+        el.scrollTop = el.scrollHeight;
+      };
+
+      const padOn = (id, on) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('on', !!on);
+      };
+
+      // UI sliders
+      const vmaxEl = document.getElementById('vmax');
+      const wmaxEl = document.getElementById('wmax');
+      const vmaxVal = document.getElementById('vmaxv');
+      const wmaxVal = document.getElementById('wmaxv');
+      const updateVals = () => { vmaxVal.textContent = (+vmaxEl.value).toFixed(2); wmaxVal.textContent = (+wmaxEl.value).toFixed(1); };
+      vmaxEl.addEventListener('input', updateVals); wmaxEl.addEventListener('input', updateVals); updateVals();
+
+      let ws;
+      let keys = { up:false, down:false, left:false, right:false };
+      let lastSend = 0;
+      let lastTwist = {vx: 0, wz: 0};
+
+      function connect() {
+        const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+        ws = new WebSocket(url);
+        ws.onopen = () => { document.getElementById('conn').textContent = 'Connected'; log('# connected'); };
+        ws.onmessage = (ev) => {
+          try {
+            const m = JSON.parse(ev.data);
+            if (m.type === 'rx' && m.line) { log(m.line); }
+            if (m.type === 'hello') { log(`# serial=${m.serial} baud=${m.baud}`); }
+          } catch {
+            // fall back to raw line
+            log(String(ev.data));
+          }
+        };
+        ws.onclose = () => { document.getElementById('conn').textContent = 'Disconnected (retrying)'; log('# disconnected'); setTimeout(connect, 1000); };
+        ws.onerror = () => { /* handled by close */ };
+      }
+      connect();
+
+      const send = (obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
+
+      function computeTwist() {
+        let vx = 0, wz = 0;
+        const vmax = +vmaxEl.value;
+        const wmax = +wmaxEl.value;
+        if (keys.up) vx += vmax;
+        if (keys.down) vx -= vmax;
+        if (keys.left) wz += wmax;
+        if (keys.right) wz -= wmax;
+        return {vx, wz};
+      }
+
+      function tick() {
+        const now = performance.now();
+        // 20 Hz when keys active, else 1 Hz heartbeat to keep link up
+        const active = keys.up || keys.down || keys.left || keys.right;
+        const period = active ? 50 : 1000;
+        if (now - lastSend >= period) {
+          const {vx, wz} = computeTwist();
+          lastSend = now;
+          if (active || vx !== lastTwist.vx || wz !== lastTwist.wz) {
+            send({type: 'twist', vx, wz});
+            lastTwist = {vx, wz};
+          } else {
+            // keep-alive ping
+            send({type: 'ping'});
+          }
+        }
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+
+      function setKey(k, v) {
+        if (k === 'ArrowUp') { keys.up = v; padOn('kUp', v); }
+        if (k === 'ArrowDown') { keys.down = v; padOn('kDown', v); }
+        if (k === 'ArrowLeft') { keys.left = v; padOn('kLeft', v); }
+        if (k === 'ArrowRight') { keys.right = v; padOn('kRight', v); }
+      }
+
+      window.addEventListener('keydown', (e) => {
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Spacebar"].includes(e.key)) e.preventDefault();
+        if (e.repeat) return;
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) setKey(e.key, true);
+        if (e.key === ' ' || e.code === 'Space') { lastTwist = {vx: 0, wz: 0}; send({type:'twist', vx:0, wz:0}); }
+        if (e.key === 's' || e.key === 'S') { send({type:'safe', enable:true}); }
+        if (e.key === 'e' || e.key === 'E') { send({type:'safe', enable:false}); }
+      });
+      window.addEventListener('keyup', (e) => {
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) { e.preventDefault(); setKey(e.key, false); }
+      });
+
+      document.getElementById('btnStop').onclick = () => { lastTwist = {vx:0, wz:0}; send({type:'twist', vx:0, wz:0}); };
+      document.getElementById('btnSafe').onclick = () => send({type:'safe', enable:true});
+      document.getElementById('btnEstop').onclick = () => send({type:'safe', enable:false});
+    </script>
+  </body>
+  </html>
+
