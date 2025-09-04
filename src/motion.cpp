@@ -1,5 +1,6 @@
 #include "motion.h"
 #include <Arduino.h>
+#include "sensors.h"  // for pause/resume of OI sensor stream during blocking motions
 
 // iRobot Create 1 Open Interface opcodes
 static constexpr uint8_t OI_START = 128;
@@ -42,36 +43,44 @@ void initMotors() {
  * Advance the robot forward for one control tick.
  */
 void forwardOneTick() {
+  pauseSensorStream();
   driveWheels(VELOCITY, VELOCITY);
   delay(TICK_MS);
   driveWheels(0, 0);
+  resumeSensorStream();
 }
 
 /**
  * Move the robot backward for one control tick.
  */
 void backwardOneTick() {
+  pauseSensorStream();
   driveWheels(-VELOCITY, -VELOCITY);
   delay(TICK_MS);
   driveWheels(0, 0);
+  resumeSensorStream();
 }
 
 /**
  * Turn the robot left in place for one control tick.
  */
 void turnLeftOneTick() {
+  pauseSensorStream();
   driveWheels(VELOCITY, -VELOCITY);
   delay(TICK_MS);
   driveWheels(0, 0);
+  resumeSensorStream();
 }
 
 /**
  * Turn the robot right in place for one control tick.
  */
 void turnRightOneTick() {
+  pauseSensorStream();
   driveWheels(-VELOCITY, VELOCITY);
   delay(TICK_MS);
   driveWheels(0, 0);
+  resumeSensorStream();
 }
 
 /**
@@ -80,9 +89,11 @@ void turnRightOneTick() {
 void veerLeftOneTick() {
   int16_t fast = VELOCITY;
   int16_t slow = (VELOCITY * 3) / 5; // ~60% speed on left wheel
+  pauseSensorStream();
   driveWheels(fast, slow);
   delay(TICK_MS);
   driveWheels(0, 0);
+  resumeSensorStream();
 }
 
 /**
@@ -91,9 +102,11 @@ void veerLeftOneTick() {
 void veerRightOneTick() {
   int16_t slow = (VELOCITY * 3) / 5; // ~60% speed on right wheel
   int16_t fast = VELOCITY;
+  pauseSensorStream();
   driveWheels(slow, fast);
   delay(TICK_MS);
   driveWheels(0, 0);
+  resumeSensorStream();
 }
 
 /**

@@ -523,6 +523,7 @@ static void controlTick() {
   wz_actual = stepToward(wz_actual, wz_goal, maxDw);
 
   // Send drive command to Create OI
+  oiFullGuardTick();
   applyDriveFromTwist(vx_actual, wz_actual);
 
   // STATE select

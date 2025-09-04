@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "motion.h"
+#include "sensors.h"
 #include <Arduino.h>
 
 // Select the hardware serial used to talk to the Create.
@@ -19,6 +20,9 @@ static const uint8_t OI_PLAY  = 141; // Play song
 // Keepalive cadence (ms). Sending a no-op drive keeps OI from idling.
 static const unsigned long KEEPALIVE_INTERVAL_MS = 1000;
 static unsigned long lastKeepaliveMs = 0;
+// Re-enter FULL guard: periodically reassert OI_FULL to avoid falling back to Passive
+static const unsigned long FULL_GUARD_INTERVAL_MS = 1000;
+static unsigned long lastFullAssertMs = 0;
 // Watchdog: require periodic pet; if missed, force stop
 static const unsigned long ROBOT_WATCHDOG_TIMEOUT_MS = 300; // ms
 static unsigned long lastRobotWatchdogMs = 0;
@@ -44,6 +48,7 @@ void initConnection() {
   delay(20);
   CREATE_SERIAL.write(OI_FULL); // Full control mode (vs SAFE)
   delay(20);
+  lastFullAssertMs = millis();
 
   // Send a stop drive to ensure motors are idle and start keepalive timer
   writeHighLow(OI_DRIVE, 0, 0);
@@ -55,9 +60,22 @@ void initConnection() {
 void keepAliveTick() {
   unsigned long now = millis();
   if (now - lastKeepaliveMs >= KEEPALIVE_INTERVAL_MS) {
+    // Re-enter FULL periodically to guard against mode drops
+    if (now - lastFullAssertMs >= FULL_GUARD_INTERVAL_MS) {
+      CREATE_SERIAL.write(OI_FULL);
+      lastFullAssertMs = now;
+    }
     // No-op drive (velocity 0, radius 0) acts as a benign keepalive
     writeHighLow(OI_DRIVE, 0, 0);
     lastKeepaliveMs = now;
+  }
+}
+
+void oiFullGuardTick() {
+  unsigned long now = millis();
+  if (now - lastFullAssertMs >= FULL_GUARD_INTERVAL_MS) {
+    CREATE_SERIAL.write(OI_FULL);
+    lastFullAssertMs = now;
   }
 }
 
@@ -81,7 +99,8 @@ void enforceRobotWatchdog() {
 }
 
 void delayBriefly() {
-  delay(100); // simple pause
+  // Short pause that should not starve the OI stream
+  delay(100);
 }
 
 void randomWiggle() {

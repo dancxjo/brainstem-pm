@@ -4,6 +4,7 @@
 // returns one byte where non-zero means the event is active.
 
 #include "sensors.h"
+#include "utils.h"
 #include <Arduino.h>
 
 // Select the hardware serial used to talk to the Create OI.
@@ -59,6 +60,32 @@ static bool cachedWall = false;
 static uint8_t lastButtons = 0;
 static volatile bool btnPlayEdge = false;
 static volatile bool btnAdvEdge = false;
+static uint16_t badChecksumCount = 0;
+static unsigned long lastRecoverMs = 0;
+
+static void recoverStreamIfNeeded() {
+  unsigned long now = millis();
+  if (badChecksumCount >= 8 && (now - lastStreamMs) > 250) {
+    // Too many errors with no valid frame recently: reconfigure stream and poke OI
+    Serial.println("[SENS] stream auto-recover: reconfig + pokeOI");
+    pokeOI();
+    // Reconfigure stream list and resume
+    CREATE_SERIAL.write(OI_PAUSE); CREATE_SERIAL.write((uint8_t)0);
+    CREATE_SERIAL.write(OI_STREAM);
+    CREATE_SERIAL.write((uint8_t)(sizeof(requestedPackets)));
+    for (uint8_t i = 0; i < sizeof(requestedPackets); ++i) CREATE_SERIAL.write(requestedPackets[i]);
+    CREATE_SERIAL.write(OI_PAUSE); CREATE_SERIAL.write((uint8_t)1);
+    // Reset parser state and counters
+    spState = WAIT_HEADER; spLen = 0; spRead = 0; badChecksumCount = 0; lastRecoverMs = now;
+    // Drain any residual bytes quickly
+    while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
+  }
+}
+// Previous snapshot for change-detect logging
+static bool prevBumpLeft = false, prevBumpRight = false;
+static bool prevCliffL = false, prevCliffFL = false, prevCliffFR = false, prevCliffR = false;
+static bool prevWall = false;
+static uint8_t prevButtons = 0;
 
 // Read exactly len bytes from CREATE_SERIAL within timeoutMs. Returns true if full buffer read.
 static bool readBytes(uint8_t* dst, size_t len, unsigned long timeoutMs) {
@@ -94,6 +121,8 @@ static bool queryBytePacket(uint8_t packetId, uint8_t &out) {
   return true;
 }
 
+static bool streamPaused = false;
+
 void beginSensorStream() {
   // Pause any existing stream, configure, then resume
   CREATE_SERIAL.write(OI_PAUSE);
@@ -109,33 +138,45 @@ void beginSensorStream() {
   spState = WAIT_HEADER;
   spLen = 0;
   spRead = 0;
+  streamPaused = false;
   while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
   Serial.println("[SENS] OI stream started (7,9,10,11,12,18,8)");
 }
 
 void pauseSensorStream() {
-  // Pause any ongoing OI stream
-  CREATE_SERIAL.write(OI_PAUSE);
-  CREATE_SERIAL.write((uint8_t)0);
+  if (!streamPaused) {
+    // Pause any ongoing OI stream
+    CREATE_SERIAL.write(OI_PAUSE);
+    CREATE_SERIAL.write((uint8_t)0);
+    streamPaused = true;
+    Serial.println("[SENS] stream PAUSE");
+  }
 }
 
 void resumeSensorStream() {
-  // Resume an already configured OI stream
-  CREATE_SERIAL.write(OI_PAUSE);
-  CREATE_SERIAL.write((uint8_t)1);
+  if (streamPaused) {
+    // Resume an already configured OI stream
+    CREATE_SERIAL.write(OI_PAUSE);
+    CREATE_SERIAL.write((uint8_t)1);
+    streamPaused = false;
+    Serial.println("[SENS] stream RESUME");
+  }
 }
 
 void updateSensorStream() {
+  static bool haveHeader = false;
   while (CREATE_SERIAL.available()) {
     int bi = CREATE_SERIAL.read();
     if (bi < 0) break;
     uint8_t b = (uint8_t)bi;
     switch (spState) {
       case WAIT_HEADER:
-        if (b == 19) spState = WAIT_LEN;
+        if (b == 19) { spState = WAIT_LEN; haveHeader = true; }
         break;
       case WAIT_LEN:
-        spLen = b; // one byte length
+        // We should only be here after seeing the header
+        haveHeader = false;
+        spLen = b; // one byte length (payload size)
         if (spLen == 0 || spLen > sizeof(payloadBuf)) {
           Serial.print("[SENS] stream len invalid: "); Serial.println((int)spLen);
           spState = WAIT_HEADER; // resync to next header
@@ -149,12 +190,17 @@ void updateSensorStream() {
         if (spRead >= spLen) spState = WAIT_CHECKSUM;
         break;
       case WAIT_CHECKSUM: {
-        // Verify checksum: sum(header, len, payload, checksum) & 0xFF == 0
-        uint16_t sum = 19;
-        sum += spLen;
-        for (uint8_t i = 0; i < spLen; ++i) sum += payloadBuf[i];
-        sum += b;
-        if ((sum & 0xFF) == 0) {
+        // Verify checksum: some firmware uses two's complement (sum+chk == 0 mod 256),
+        // others use ones' complement (sum+chk == 0xFF). Accept either.
+        uint16_t sumBase = 19;
+        sumBase += spLen;
+        for (uint8_t i = 0; i < spLen; ++i) sumBase += payloadBuf[i];
+        uint8_t expect0   = (uint8_t)((- (int)(sumBase & 0xFF)) & 0xFF);      // two's complement
+        uint8_t expectFF  = (uint8_t)(0xFF - (sumBase & 0xFF));               // ones' complement
+        uint8_t gotChk = b;
+        bool cksumOk = (gotChk == expect0) || (gotChk == expectFF) || (((sumBase + gotChk) & 0xFF) == 0);
+        if (cksumOk) {
+          badChecksumCount = 0;
           // Robust parsing: Some OI variants stream only values in the requested order (no IDs),
           // others prefix each value with its packet ID. Support both.
           auto pktLen = [](uint8_t id)->uint8_t {
@@ -247,18 +293,42 @@ void updateSensorStream() {
             Serial.println();
           } else {
             lastStreamMs = millis();
-            Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
-            Serial.print(" R="); Serial.print((int)cachedBumpRight);
-            Serial.print(" cliffs=");
-            Serial.print((int)cachedCliffL); Serial.print(",");
-            Serial.print((int)cachedCliffFL); Serial.print(",");
-            Serial.print((int)cachedCliffFR); Serial.print(",");
-            Serial.print((int)cachedCliffR);
-            Serial.print(" wall="); Serial.print((int)cachedWall);
-            Serial.print(" btn="); Serial.println((int)lastButtons);
+            bool changed = (cachedBumpLeft != prevBumpLeft) || (cachedBumpRight != prevBumpRight) ||
+                           (cachedCliffL != prevCliffL) || (cachedCliffFL != prevCliffFL) ||
+                           (cachedCliffFR != prevCliffFR) || (cachedCliffR != prevCliffR) ||
+                           (cachedWall != prevWall) || (lastButtons != prevButtons);
+            if (changed) {
+              Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
+              Serial.print(" R="); Serial.print((int)cachedBumpRight);
+              Serial.print(" cliffs=");
+              Serial.print((int)cachedCliffL); Serial.print(",");
+              Serial.print((int)cachedCliffFL); Serial.print(",");
+              Serial.print((int)cachedCliffFR); Serial.print(",");
+              Serial.print((int)cachedCliffR);
+              Serial.print(" wall="); Serial.print((int)cachedWall);
+              Serial.print(" btn="); Serial.println((int)lastButtons);
+            }
+            prevBumpLeft = cachedBumpLeft; prevBumpRight = cachedBumpRight;
+            prevCliffL = cachedCliffL; prevCliffFL = cachedCliffFL; prevCliffFR = cachedCliffFR; prevCliffR = cachedCliffR;
+            prevWall = cachedWall; prevButtons = lastButtons;
           }
         } else {
-          Serial.println("[SENS] stream checksum error; resyncing");
+          badChecksumCount++;
+          static unsigned long lastErrMs = 0; unsigned long nowMs = millis();
+          if (nowMs - lastErrMs > 200) {
+            lastErrMs = nowMs;
+            Serial.print("[SENS] stream checksum error; resyncing len="); Serial.print((int)spLen);
+            Serial.print(" got="); Serial.print((int)gotChk);
+            Serial.print(" expect0="); Serial.print((int)expect0);
+            Serial.print(" expectFF="); Serial.println((int)expectFF);
+            // Optional raw frame dump (header,len,payload...,chk) once per report window
+            Serial.print("[SENS] frame: 19,"); Serial.print((int)spLen); Serial.print(",");
+            for (uint8_t i = 0; i < spLen; ++i) { Serial.print((int)payloadBuf[i]); Serial.print(","); }
+            Serial.println((int)gotChk);
+          }
+          recoverStreamIfNeeded();
+          // If the byte we read as checksum is actually the next header, keep it
+          if (gotChk == 19) { spState = WAIT_LEN; haveHeader = true; break; }
         }
         spState = WAIT_HEADER;
         break;
@@ -270,7 +340,7 @@ void updateSensorStream() {
 bool oiConnected() {
   // Consider connected if we saw a valid stream frame recently
   unsigned long now = millis();
-  return (lastStreamMs != 0) && (now - lastStreamMs < 1000);
+  return (lastStreamMs != 0) && (now - lastStreamMs < 2000);
 }
 
 void initSensors() {
