@@ -5,8 +5,13 @@
 
 class HardwareSerial {
 public:
+  // Bytes written by the device under test
   std::vector<uint8_t> buffer;
+  // Bytes to be read by the device under test
+  std::vector<uint8_t> rx;
+
   void begin(unsigned long) {}
+
   size_t write(uint8_t b) {
     buffer.push_back(b);
     return 1;
@@ -15,9 +20,17 @@ public:
     buffer.insert(buffer.end(), data, data + len);
     return len;
   }
-  int available() { return 0; }
-  int read() { return -1; }
-  void clear() { buffer.clear(); }
+  int available() { return static_cast<int>(rx.size()); }
+  int read() {
+    if (rx.empty()) return -1;
+    uint8_t b = rx.front();
+    rx.erase(rx.begin());
+    return b;
+  }
+  void clear() {
+    buffer.clear();
+    rx.clear();
+  }
 };
 
 extern HardwareSerial Serial1;
@@ -83,10 +96,9 @@ inline long random(long max) {
   return (long)(seed % (unsigned long)max);
 }
 
-// Minimal USB Serial stub for debug logs
-class USBSerial {
+// Minimal USB Serial stub for debug logs and passthrough tests
+class USBSerial : public HardwareSerial {
 public:
-  void begin(unsigned long) {}
   void print(const char*) {}
   void println(const char*) {}
   void print(int) {}
