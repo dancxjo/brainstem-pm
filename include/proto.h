@@ -6,7 +6,9 @@
 //   RANGE,<meters>,<id>\n
 //   SET,<key>,<value> | GET,<key> | GET,evt,<eid>\n
 //   LED,<bitmask>\n
-//   PAUSE | RESUME | REPLAY,<since_eid> | STATS\n
+//   <NUL> (0x00) to enter interpreter from default passthrough\n
+//   PAUSE | RESUME | PASS (return to passthrough)\n
+//   REPLAY,<since_eid> | STATS\n
 // Outbound (MCU → host):
 //   HELLO,proto=1.0,build=<date> <time>\n
 //   LINK,<0|1>,<seq>\n

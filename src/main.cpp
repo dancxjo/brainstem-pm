@@ -7,6 +7,7 @@
 #include "sensors.h"
 #include "motion.h"
 #include "utils.h"
+#include "passthrough.h"
 
 // ---- UART-centric brainstem v1.0 ----
 // Select the hardware serial used to talk to the Create OI early so helpers can use it.
@@ -42,7 +43,7 @@ static void tx_send(uint8_t pri, const char* base);
 // TX scheduler (token bucket)
 static float tx_tokens = 0.0f;
 static unsigned long tx_last_ms = 0;
-static bool tx_paused = false;
+bool tx_paused = false;
 static uint32_t stat_tx_drop = 0;
 static uint32_t stat_rx_overflow = 0;
 static uint32_t stat_crc_err = 0;
@@ -345,6 +346,7 @@ static void handleLed(char* args) { uint32_t m=0; if(args) m=strtoul(args,nullpt
 static void handlePing(char* args){ if(!args){ tx_send(0,"ERR,parse,arity"); return;} uint32_t s; if(!parse_uint(args,s)){ tx_send(0,"ERR,parse,num"); return;} publish_pong(s); }
 static void handlePause(){ tx_paused=true; tx_send(0,"ACK,paused,1"); log_msg(2,"paused"); }
 static void handleResume(){ tx_paused=false; tx_send(0,"ACK,paused,0"); log_msg(2,"resumed"); }
+static void handlePass(){ tx_send(0,"ACK,PASS,1"); passthroughEnable(); }
 static void handleRange(char* args){
   char* a1=strtok(args, ","); char* a2=strtok(nullptr, ",");
   if(!(a1&&a2)){ tx_send(0,"ERR,parse,arity"); return; }
@@ -404,6 +406,7 @@ static void handleLine(char* line) {
   else if (strcmp(cmd, "PING") == 0) handlePing(args);
   else if (strcmp(cmd, "PAUSE") == 0) handlePause();
   else if (strcmp(cmd, "RESUME") == 0) handleResume();
+  else if (strcmp(cmd, "PASS") == 0) handlePass();
   else if (strcmp(cmd, "RANGE") == 0) handleRange(args);
   else if (strcmp(cmd, "SET") == 0) handleSet(args);
   else if (strcmp(cmd, "GET") == 0) handleGet(args);
@@ -512,21 +515,24 @@ void setup() {
   Serial.begin(115200);
   unsigned long start = millis();
   while (!Serial && millis() - start < 200) { /* wait up to 200ms */ }
-  // Initialize Create OI and enter FULL mode; start sensor stream
+  // Initialize Create OI and enter FULL mode
   initConnection();
   beginSensorStream();
+  passthroughEnable();
   for (uint8_t i=0;i<MAX_RANGE_IDS;i++){ rangeValid[i]=false; rangeIds[i]=0; rangeVals[i]=NAN; }
   last_uart_ms = millis(); linkUp=false; curModeState = nullptr;
   tx_last_ms = millis(); tx_tokens = (float)param_tx_bytes_per_s; // allow initial burst
   initLeds();
-  publish_hello();
-  publish_health_boot();
-  publish_mode_state(PROTO_STATE_FOREBRAIN);
 }
 
 void loop() {
-  // 1) Poll USB serial and handle commands
-  pollUart(true);
+  bool wasPass = passthroughActive();
+  if (wasPass) {
+    passthroughPump();
+  } else {
+    // 1) Poll USB serial and handle commands
+    pollUart(true);
+  }
 
   unsigned long now = millis();
   // 2) Keep OI alive and run control tick
@@ -561,6 +567,13 @@ void loop() {
   // 5) Update LEDs and watchdog
   updateLeds();
   enforceRobotWatchdog();
+
+  bool nowPass = passthroughActive();
+  if (wasPass && !nowPass) {
+    publish_hello();
+    publish_health_boot();
+    publish_mode_state(PROTO_STATE_FOREBRAIN);
+  }
 }
 
 #else // BRAINSTEM_UART
