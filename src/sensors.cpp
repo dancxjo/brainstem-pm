@@ -39,11 +39,6 @@ static bool cachedBumpLeft = false;
 static bool cachedBumpRight = false;
 static bool cachedCliffL = false, cachedCliffFL = false, cachedCliffFR = false, cachedCliffR = false;
 
-// Stream parsing state
-enum StreamParseState { WAIT_HEADER, WAIT_LEN, READ_PAYLOAD, WAIT_CHECKSUM };
-static StreamParseState spState = WAIT_HEADER; // kept for resets, not used by pair parser
-static uint8_t spLen = 0;   // OI stream length (unused in pair parser)
-static uint8_t spRead = 0;
 // Stream single-byte packets only to keep parsing simple:
 //  - 7  = Bumps/Wheel Drops (1 byte)
 //  - 9  = Cliff Left (1 byte)
@@ -53,7 +48,6 @@ static uint8_t spRead = 0;
 //  - 18 = Buttons (1 byte)
 //  - 8  = Wall (boolean, 1 byte)
 static const uint8_t requestedPackets[] = { 7, 9, 10, 11, 12, 18, 8 };
-static uint8_t payloadBuf[32];
 static unsigned long lastStreamMs = 0;
 // Pair parser state: expect value after seeing an ID
 static bool expectValue = false;
@@ -90,39 +84,7 @@ static bool prevCliffL = false, prevCliffFL = false, prevCliffFR = false, prevCl
 static bool prevWall = false;
 static uint8_t prevButtons = 0;
 
-// Read exactly len bytes from CREATE_SERIAL within timeoutMs. Returns true if full buffer read.
-static bool readBytes(uint8_t* dst, size_t len, unsigned long timeoutMs) {
-  unsigned long start = millis();
-  size_t got = 0;
-  while (got < len) {
-    while (CREATE_SERIAL.available() && got < len) {
-      int c = CREATE_SERIAL.read();
-      if (c < 0) break;
-      dst[got++] = static_cast<uint8_t>(c);
-    }
-    if (got >= len) break;
-    if (millis() - start > timeoutMs) return false;
-    // brief pause to yield
-    delay(1);
-  }
-  return got == len;
-}
-
-// Query a single-byte sensor packet by ID. Returns true and fills out if a byte was read.
-static bool queryBytePacket(uint8_t packetId, uint8_t &out) {
-  CREATE_SERIAL.write(OI_SENSORS);
-  CREATE_SERIAL.write(packetId);
-  uint8_t b = 0;
-  if (!readBytes(&b, 1, 20)) {
-    Serial.print("[SENS] pkt "); Serial.print((int)packetId);
-    Serial.println(" timeout");
-    return false;
-  }
-  Serial.print("[SENS] pkt "); Serial.print((int)packetId);
-  Serial.print(" = "); Serial.println((int)b);
-  out = b;
-  return true;
-}
+// Polling helpers removed in minimal stream parser build
 
 static bool streamPaused = false;
 
@@ -138,14 +100,11 @@ void beginSensorStream() {
   CREATE_SERIAL.write(OI_PAUSE);
   CREATE_SERIAL.write((uint8_t)1); // resume
   // Reset parser state and drain any stale bytes
-  spState = WAIT_HEADER;
-  spLen = 0;
-  spRead = 0;
   expectValue = false;
   currentId = 0;
   streamPaused = false;
   while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
-  Serial.println("[SENS] OI stream started (7,9,10,11,12,18,8)");
+  // stream started
 }
 
 void pauseSensorStream() {
@@ -154,7 +113,6 @@ void pauseSensorStream() {
     CREATE_SERIAL.write(OI_PAUSE);
     CREATE_SERIAL.write((uint8_t)0);
     streamPaused = true;
-    Serial.println("[SENS] stream PAUSE");
   }
 }
 
@@ -164,7 +122,6 @@ void resumeSensorStream() {
     CREATE_SERIAL.write(OI_PAUSE);
     CREATE_SERIAL.write((uint8_t)1);
     streamPaused = false;
-    Serial.println("[SENS] stream RESUME");
   }
 }
 
@@ -207,15 +164,7 @@ void updateSensorStream() {
                      (cachedCliffFR != prevCliffFR) || (cachedCliffR != prevCliffR) ||
                      (cachedWall != prevWall) || (lastButtons != prevButtons);
       if (changed) {
-        Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
-        Serial.print(" R="); Serial.print((int)cachedBumpRight);
-        Serial.print(" cliffs=");
-        Serial.print((int)cachedCliffL); Serial.print(",");
-        Serial.print((int)cachedCliffFL); Serial.print(",");
-        Serial.print((int)cachedCliffFR); Serial.print(",");
-        Serial.print((int)cachedCliffR);
-        Serial.print(" wall="); Serial.print((int)cachedWall);
-        Serial.print(" btn="); Serial.println((int)lastButtons);
+        // log suppressed to save flash
       }
       prevBumpLeft = cachedBumpLeft; prevBumpRight = cachedBumpRight;
       prevCliffL = cachedCliffL; prevCliffFL = cachedCliffFL; prevCliffFR = cachedCliffFR; prevCliffR = cachedCliffR;
@@ -240,10 +189,8 @@ void initSensors() {
   int irq = digitalPinToInterrupt(BUMPER_PIN);
   if (irq != NOT_AN_INTERRUPT) {
     attachInterrupt(irq, bumperIsr, CHANGE);
-    Serial.print("[SENS] Bumper ISR attached on pin ");
-    Serial.println(BUMPER_PIN);
   } else {
-    Serial.println("[SENS] Bumper ISR not available on this pin");
+    // no interrupt available
   }
 #  endif
 #endif
@@ -258,24 +205,21 @@ int scanEnvironment() {
 bool bumperTriggered() {
   bool any = (cachedBumpLeft || cachedBumpRight);
   if (any) {
-    Serial.print("[SENS] bumperTriggered via stream L=");
-    Serial.print((int)cachedBumpLeft);
-    Serial.print(" R=");
-    Serial.println((int)cachedBumpRight);
+    // log suppressed
   }
   return any;
 }
 
 bool cliffDetected() {
   bool any = (cachedCliffL || cachedCliffFL || cachedCliffFR || cachedCliffR);
-  if (any) Serial.println("[SENS] cliff detected via stream");
+  if (any) { /* log suppressed */ }
   return any;
 }
 
 bool bumperEventTriggeredAndClear() {
   bool was = bumperEventFlag;
   bumperEventFlag = false;
-  if (was) Serial.println("[SENS] bumper ISR event");
+  if (was) { /* log suppressed */ }
   return was;
 }
 

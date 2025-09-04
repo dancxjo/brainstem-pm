@@ -10,6 +10,10 @@
 #include "utils.h"
 
 // ---- UART-centric brainstem v1.0 ----
+// Select the hardware serial used to talk to the Create OI early so helpers can use it.
+#ifndef CREATE_SERIAL
+#define CREATE_SERIAL Serial1
+#endif
 
 // Control loop timing (Hz)
 static const uint16_t CONTROL_HZ = 50;
@@ -27,7 +31,7 @@ static uint16_t param_max_line_len = 96;
 static uint8_t param_log_level = 0;  // 0=off..3=debug
 
 // UART line reader (sanitized)
-static char lineBuf[80];
+static char lineBuf[64];
 static uint16_t lineLen = 0;
 static unsigned long last_uart_ms = 0;
 static bool linkUp = false;
@@ -35,6 +39,9 @@ static bool linkUp = false;
 static bool modeForebrain = false;      // true=FOREBRAIN, false=AUTONOMOUS
 static bool autonomousInit = false;     // one-time init guard
 static const char* curModeState = nullptr; // edge-dedup for STATE mode telemetry
+
+// Forward declare tx_send so helpers can log before its definition
+static void tx_send(uint8_t pri, const char* base);
 
 // TX scheduler (token bucket)
 static float tx_tokens = 0.0f;
@@ -46,8 +53,8 @@ static uint32_t stat_crc_err = 0;
 
 // Replay ring (compact). Keep small on AVR.
 #if defined(ARDUINO_ARCH_AVR)
-#  define REPLAY_N 2
-#  define REPLAY_MAXLEN 48
+#  define REPLAY_N 1
+#  define REPLAY_MAXLEN 32
 #else
 #  define REPLAY_N 64
 #  define REPLAY_MAXLEN 128
@@ -106,6 +113,19 @@ static void applyDriveFromTwist(float vx_mps, float wz_rad_s) {
   int16_t l = clamp_mm_s(v_l_mps * 1000.0f);
   oi_drive_direct(r, l);
   feedRobotWatchdog();
+  // Telemetry: log applied wheel speeds occasionally or when changed
+  static int16_t last_r = 0, last_l = 0;
+  static unsigned long last_log_ms = 0;
+  unsigned long now = millis();
+  // Optional drive telemetry (disabled to save flash unless ENABLE_DEBUG)
+#ifdef ENABLE_DEBUG
+  if (r != last_r || l != last_l || (now - last_log_ms) > 250) {
+    char b[48];
+    snprintf(b, sizeof(b), "DRV,%d,%d", (int)r, (int)l);
+    tx_send(1, b);
+    last_r = r; last_l = l; last_log_ms = now;
+  }
+#endif
 }
 
 // Odometry
@@ -125,9 +145,6 @@ static int32_t lastMinRangeId = -1;
 static const char* curState = PROTO_STATE_LINKDOWN;
 
 // Create OI (Serial1) helpers for sensors/odometry
-#ifndef CREATE_SERIAL
-#define CREATE_SERIAL Serial1
-#endif
 static constexpr uint8_t OI_START = 128;
 static constexpr uint8_t OI_SAFE = 131;
 static constexpr uint8_t OI_FULL = 132;
@@ -469,7 +486,9 @@ static void pollCreateSensors() {
     if (oi_read_i16(22, mv)) batt_mV = (uint16_t)mv;
     if (oi_read_i16(25, charge) && oi_read_i16(26, cap) && cap>0) {
       int pct = (int)((long)charge * 100L / (long)cap);
-      if (pct < 0) pct = 0; if (pct > 100) pct = 100; batt_pct = (uint8_t)pct;
+      if (pct < 0) { pct = 0; }
+      if (pct > 100) { pct = 100; }
+      batt_pct = (uint8_t)pct;
     }
     publish_bat();
     static bool lowBatNotified = false;
@@ -530,6 +549,21 @@ static void controlTick() {
   float maxDv = param_slew_v * dt; float maxDw = param_slew_w * dt;
   vx_actual = stepToward(vx_actual, vx_goal, maxDv);
   wz_actual = stepToward(wz_actual, wz_goal, maxDw);
+
+  // Telemetry: report slewed twist occasionally and on change
+  // Optional twist telemetry (disabled to save flash unless ENABLE_DEBUG)
+#ifdef ENABLE_DEBUG
+  {
+    static float last_vx = 0.0f, last_wz = 0.0f; static unsigned long last_ms = 0;
+    bool changed = (fabs(vx_actual - last_vx) > 1e-3f) || (fabs(wz_actual - last_wz) > 1e-3f);
+    if (changed || (now - last_ms) > 250) {
+      char b[64];
+      snprintf(b, sizeof(b), "TWIST_ACT,%.3f,%.3f", (double)vx_actual, (double)wz_actual);
+      tx_send(1, b);
+      last_vx = vx_actual; last_wz = wz_actual; last_ms = now;
+    }
+  }
+#endif
 
   // Send drive command to Create OI
   oiFullGuardTick();
@@ -611,7 +645,7 @@ void loop() {
     }
     // Idle chirp in forebrain mode if robot is idle for a long while
     static unsigned long lastIdleChirpMs = 0;
-    if (curState == PROTO_STATE_IDLE && linkUp) {
+    if ((curState && strcmp(curState, PROTO_STATE_IDLE) == 0) && linkUp) {
       if (now - lastIdleChirpMs > 30000UL) { playIdleChirp(); lastIdleChirpMs = now; }
     } else {
       if (now - lastIdleChirpMs > 60000UL) lastIdleChirpMs = now; // avoid wrap

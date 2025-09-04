@@ -86,11 +86,7 @@ void feedRobotWatchdog() {
 void enforceRobotWatchdog() {
   unsigned long now = millis();
   if ((now - lastRobotWatchdogMs) > ROBOT_WATCHDOG_TIMEOUT_MS) {
-    if (!watchdogTripped) {
-      // Only log on first trip to avoid spamming
-      Serial.println("[WDOG] Motion watchdog expired; forcing STOP");
-      watchdogTripped = true;
-    }
+    if (!watchdogTripped) { watchdogTripped = true; }
     // Force a stop drive repeatedly as long as expired
     writeHighLow(OI_DRIVE, 0, 0);
   } else {
@@ -118,6 +114,7 @@ void turnRandomly() {
   }
 }
 
+#ifdef ENABLE_TUNES
 void playBumperSong() {
   // Define a short triad: C5, E5, G5, each 1/8 note (8 ticks of 1/64s = 125ms)
   // Middle C is 60; C5 is 72
@@ -288,3 +285,18 @@ void playPurrMelody() {
   const uint8_t d[] = {6, 6, 6, 6};
   defineAndPlay(18, n, d, 4);
 }
+#else
+// Stub out tunes to save flash when ENABLE_TUNES is not defined
+void playBumperSong() {}
+void playStateSong(uint8_t) {}
+void playStartupJingle() {}
+void playShutdownSigh() {}
+void playForebrainTrill() {}
+void playLonelyTune() {}
+void playOopsChirp() {}
+void playLowBatteryTone() {}
+void playCliffWhoa() {}
+void playEstopAlarmSad() {}
+void playIdleChirp() {}
+void playPurrMelody() {}
+#endif

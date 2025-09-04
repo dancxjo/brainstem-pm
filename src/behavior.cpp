@@ -47,6 +47,7 @@ static inline void enterState(State s) {
     switch (st) {
       case CONNECTING: return "CONNECTING";
       case WAITING: return "WAITING";
+      case WALL_FOLLOWING: return "WALL_FOLLOWING";
       case SEEKING: return "SEEKING";
       case ADVANCING: return "ADVANCING";
       case RECOILING: return "RECOILING";
@@ -56,16 +57,10 @@ static inline void enterState(State s) {
     }
     return "?";
   };
-  Serial.print("[FSM] ");
-  Serial.print(name(currentState));
-  Serial.print(" -> ");
-  Serial.println(name(s));
-  Serial.print("  bias="); Serial.print((int)turnBias);
-  Serial.print(" runTarget="); Serial.print(runTicksTarget);
-  Serial.print(" bumps="); Serial.println(bumpsRecently);
+  // Logs suppressed to save flash
   // Play a distinct audio cue only when state actually changes
   if (s != currentState) {
-    playStateSong((uint8_t)s);
+    // Audio suppressed in minimal build
   }
   currentState = s;
   stateEnterMs = millis();
@@ -163,9 +158,7 @@ void updateBehavior() {
         long jitter = (long)(interval / 5);
         long delta = (long)random((long)(2 * jitter + 1)) - jitter;
         nextConnectAttemptMs = now + interval + (unsigned long)((delta < 0) ? 0 - delta : delta);
-        Serial.print("[FSM] CONNECTING attempt "); Serial.print(connectRetry);
-        Serial.print(" interval="); Serial.print(interval);
-        Serial.print(" next in ~"); Serial.println((long)(interval + delta));
+        // suppressed
         pokeOI();
         beginSensorStream();
         if (connectRetry < 20) connectRetry++;
@@ -178,7 +171,7 @@ void updateBehavior() {
       stopAllMotors();
       if (!oiConnected()) { enterState(CONNECTING); break; }
       delayBriefly();
-      // enterState(WALL_FOLLOWING); // remain in WAITING
+      // remain in WAITING
       break;
 
     case WALL_FOLLOWING: {
@@ -206,14 +199,13 @@ void updateBehavior() {
         // Longer runs if we haven't bumped recently
         unsigned long sinceBump = millis() - lastBumpMs;
         runTicksTarget = (sinceBump > 5000) ? 10 : 6;
-        Serial.print("[FSM] SEEKING stimulus forward, runTicksTarget=");
-        Serial.println(runTicksTarget);
+        // suppressed
         enterState(ADVANCING);
       } else if (stimulus == -1) {
-        Serial.println("[FSM] SEEKING stimulus left");
+        // suppressed
         enterState(TURNING_LEFT);
       } else if (stimulus == 2) {
-        Serial.println("[FSM] SEEKING stimulus right");
+        // suppressed
         enterState(TURNING_RIGHT);
       } else {
         // No stimulus: casting — alternating gentle arcs, slightly biased
@@ -226,10 +218,10 @@ void updateBehavior() {
           if (favorRight) veerLeftOneTick(); else veerRightOneTick();
         }
         castingPhase++;
-        Serial.print("[FSM] SEEKING cast phase="); Serial.println(castingPhase);
+        // suppressed
         // Periodically attempt a short forward tick to probe ahead
         if ((castingPhase % 5) == 0) {
-          Serial.println("[FSM] SEEKING forward probe");
+          // suppressed
           forwardOneTick();
         }
         // Remain in SEEKING
@@ -245,17 +237,16 @@ void updateBehavior() {
         // Habituation: record bump timing and increase turn magnitude
         lastBumpMs = millis();
         if (bumpsRecently < 10) bumpsRecently++;
-        Serial.print("[FSM] ADV bump! bumpsRecently="); Serial.println(bumpsRecently);
+        // suppressed
         enterState(RECOILING);
       } else if (cliffDetected()) {
-        Serial.println("[FSM] ADV cliff!");
+        // suppressed
         enterState(FROZEN);
       } else {
         // Gentle veer in the direction of bias to create a run
         if (turnBias > 0) veerRightOneTick(); else veerLeftOneTick();
         runTicksSoFar++;
-        Serial.print("[FSM] ADV tick run="); Serial.print(runTicksSoFar);
-        Serial.print("/"); Serial.println(runTicksTarget);
+        // suppressed
         if (runTicksSoFar < runTicksTarget) {
           // continue the run
           enterState(ADVANCING);
