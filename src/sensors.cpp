@@ -41,8 +41,8 @@ static bool cachedCliffL = false, cachedCliffFL = false, cachedCliffFR = false, 
 
 // Stream parsing state
 enum StreamParseState { WAIT_HEADER, WAIT_LEN, READ_PAYLOAD, WAIT_CHECKSUM };
-static StreamParseState spState = WAIT_HEADER;
-static uint8_t spLen = 0;   // OI stream length is one byte
+static StreamParseState spState = WAIT_HEADER; // kept for resets, not used by pair parser
+static uint8_t spLen = 0;   // OI stream length (unused in pair parser)
 static uint8_t spRead = 0;
 // Stream single-byte packets only to keep parsing simple:
 //  - 7  = Bumps/Wheel Drops (1 byte)
@@ -55,6 +55,9 @@ static uint8_t spRead = 0;
 static const uint8_t requestedPackets[] = { 7, 9, 10, 11, 12, 18, 8 };
 static uint8_t payloadBuf[32];
 static unsigned long lastStreamMs = 0;
+// Pair parser state: expect value after seeing an ID
+static bool expectValue = false;
+static uint8_t currentId = 0;
 // Cached wall and button edges
 static bool cachedWall = false;
 static uint8_t lastButtons = 0;
@@ -138,6 +141,8 @@ void beginSensorStream() {
   spState = WAIT_HEADER;
   spLen = 0;
   spRead = 0;
+  expectValue = false;
+  currentId = 0;
   streamPaused = false;
   while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
   Serial.println("[SENS] OI stream started (7,9,10,11,12,18,8)");
@@ -164,175 +169,58 @@ void resumeSensorStream() {
 }
 
 void updateSensorStream() {
-  static bool haveHeader = false;
   while (CREATE_SERIAL.available()) {
     int bi = CREATE_SERIAL.read();
     if (bi < 0) break;
     uint8_t b = (uint8_t)bi;
-    switch (spState) {
-      case WAIT_HEADER:
-        if (b == 19) { spState = WAIT_LEN; haveHeader = true; }
-        break;
-      case WAIT_LEN:
-        // We should only be here after seeing the header
-        haveHeader = false;
-        spLen = b; // one byte length (payload size)
-        if (spLen == 0 || spLen > sizeof(payloadBuf)) {
-          Serial.print("[SENS] stream len invalid: "); Serial.println((int)spLen);
-          spState = WAIT_HEADER; // resync to next header
-        } else {
-          spRead = 0;
-          spState = READ_PAYLOAD;
-        }
-        break;
-      case READ_PAYLOAD:
-        payloadBuf[spRead++] = b;
-        if (spRead >= spLen) spState = WAIT_CHECKSUM;
-        break;
-      case WAIT_CHECKSUM: {
-        // Verify checksum: some firmware uses two's complement (sum+chk == 0 mod 256),
-        // others use ones' complement (sum+chk == 0xFF). Accept either.
-        uint16_t sumBase = 19;
-        sumBase += spLen;
-        for (uint8_t i = 0; i < spLen; ++i) sumBase += payloadBuf[i];
-        uint8_t expect0   = (uint8_t)((- (int)(sumBase & 0xFF)) & 0xFF);      // two's complement
-        uint8_t expectFF  = (uint8_t)(0xFF - (sumBase & 0xFF));               // ones' complement
-        uint8_t gotChk = b;
-        bool cksumOk = (gotChk == expect0) || (gotChk == expectFF) || (((sumBase + gotChk) & 0xFF) == 0);
-        if (cksumOk) {
-          badChecksumCount = 0;
-          // Robust parsing: Some OI variants stream only values in the requested order (no IDs),
-          // others prefix each value with its packet ID. Support both.
-          auto pktLen = [](uint8_t id)->uint8_t {
-            switch (id) {
-              case 7: case 8: case 9: case 10: case 11: case 12: case 18: return 1; // one byte
-              // Add cases here if multi-byte packets are added to requestedPackets
-              default: return 1;
-            }
-          };
-          const uint8_t numPkts = (uint8_t)(sizeof(requestedPackets));
-          uint8_t expectVals = 0; for (uint8_t i=0;i<numPkts;++i) expectVals += pktLen(requestedPackets[i]);
-
-          bool parsed = false;
-          // Case A: values-only stream in requested order
-          if (spLen == expectVals) {
-            uint8_t idx = 0;
-            for (uint8_t i=0;i<numPkts;++i) {
-              uint8_t id = requestedPackets[i];
-              uint8_t len = pktLen(id);
-              // All current requested packets are 1 byte
-              uint8_t val = payloadBuf[idx];
-              idx += len;
-              switch (id) {
-                case 7:  cachedBumpRight = (val & 0x01) != 0; cachedBumpLeft = (val & 0x02) != 0; break;
-                case 9:  cachedCliffL  = (val != 0); break;
-                case 10: cachedCliffFL = (val != 0); break;
-                case 11: cachedCliffFR = (val != 0); break;
-                case 12: cachedCliffR  = (val != 0); break;
-                case 18: {
-                  uint8_t prev = lastButtons; lastButtons = val;
-                  if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true;
-                  if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
-                  break;
-                }
-                case 8: cachedWall = (val != 0); break;
-                default: break;
-              }
-            }
-            parsed = true;
-          }
-          // Case B: [id][value] pairs for each requested packet (id-prefixed)
-          else if (spLen == expectVals + numPkts) {
-            uint8_t idx = 0;
-            for (uint8_t i=0;i<numPkts && (idx+1) < spLen; ++i) {
-              uint8_t id = payloadBuf[idx++];
-              uint8_t val = payloadBuf[idx++];
-              switch (id) {
-                case 7:  cachedBumpRight = (val & 0x01) != 0; cachedBumpLeft = (val & 0x02) != 0; break;
-                case 9:  cachedCliffL  = (val != 0); break;
-                case 10: cachedCliffFL = (val != 0); break;
-                case 11: cachedCliffFR = (val != 0); break;
-                case 12: cachedCliffR  = (val != 0); break;
-                case 18: {
-                  uint8_t prev = lastButtons; lastButtons = val;
-                  if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true;
-                  if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
-                  break;
-                }
-                case 8: cachedWall = (val != 0); break;
-                default: break;
-              }
-            }
-            parsed = true;
-          }
-          // Case C: Fallback – try generic [id][value] pairs throughout
-          else if ((spLen % 2) == 0) {
-            for (uint8_t i = 0; i + 1 < spLen; i += 2) {
-              uint8_t id = payloadBuf[i];
-              uint8_t val = payloadBuf[i + 1];
-              switch (id) {
-                case 7:  cachedBumpRight = (val & 0x01) != 0; cachedBumpLeft = (val & 0x02) != 0; break;
-                case 9:  cachedCliffL  = (val != 0); break;
-                case 10: cachedCliffFL = (val != 0); break;
-                case 11: cachedCliffFR = (val != 0); break;
-                case 12: cachedCliffR  = (val != 0); break;
-                case 18: { uint8_t prev = lastButtons; lastButtons = val; if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true; if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true; break; }
-                case 8: cachedWall = (val != 0); break;
-                default: break;
-              }
-            }
-            parsed = true;
-          }
-
-          if (!parsed) {
-            Serial.print("[SENS] stream unexpected len="); Serial.print((int)spLen);
-            Serial.print(" expectVals="); Serial.print((int)expectVals);
-            Serial.print(" pkts="); Serial.println((int)numPkts);
-            Serial.print("[SENS] raw: ");
-            for (uint8_t i = 0; i < spLen; ++i) { Serial.print((int)payloadBuf[i]); if (i < spLen - 1) Serial.print(","); }
-            Serial.println();
-          } else {
-            lastStreamMs = millis();
-            bool changed = (cachedBumpLeft != prevBumpLeft) || (cachedBumpRight != prevBumpRight) ||
-                           (cachedCliffL != prevCliffL) || (cachedCliffFL != prevCliffFL) ||
-                           (cachedCliffFR != prevCliffFR) || (cachedCliffR != prevCliffR) ||
-                           (cachedWall != prevWall) || (lastButtons != prevButtons);
-            if (changed) {
-              Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
-              Serial.print(" R="); Serial.print((int)cachedBumpRight);
-              Serial.print(" cliffs=");
-              Serial.print((int)cachedCliffL); Serial.print(",");
-              Serial.print((int)cachedCliffFL); Serial.print(",");
-              Serial.print((int)cachedCliffFR); Serial.print(",");
-              Serial.print((int)cachedCliffR);
-              Serial.print(" wall="); Serial.print((int)cachedWall);
-              Serial.print(" btn="); Serial.println((int)lastButtons);
-            }
-            prevBumpLeft = cachedBumpLeft; prevBumpRight = cachedBumpRight;
-            prevCliffL = cachedCliffL; prevCliffFL = cachedCliffFL; prevCliffFR = cachedCliffFR; prevCliffR = cachedCliffR;
-            prevWall = cachedWall; prevButtons = lastButtons;
-          }
-        } else {
-          badChecksumCount++;
-          static unsigned long lastErrMs = 0; unsigned long nowMs = millis();
-          if (nowMs - lastErrMs > 200) {
-            lastErrMs = nowMs;
-            Serial.print("[SENS] stream checksum error; resyncing len="); Serial.print((int)spLen);
-            Serial.print(" got="); Serial.print((int)gotChk);
-            Serial.print(" expect0="); Serial.print((int)expect0);
-            Serial.print(" expectFF="); Serial.println((int)expectFF);
-            // Optional raw frame dump (header,len,payload...,chk) once per report window
-            Serial.print("[SENS] frame: 19,"); Serial.print((int)spLen); Serial.print(",");
-            for (uint8_t i = 0; i < spLen; ++i) { Serial.print((int)payloadBuf[i]); Serial.print(","); }
-            Serial.println((int)gotChk);
-          }
-          recoverStreamIfNeeded();
-          // If the byte we read as checksum is actually the next header, keep it
-          if (gotChk == 19) { spState = WAIT_LEN; haveHeader = true; break; }
-        }
-        spState = WAIT_HEADER;
-        break;
+    // Skip frame header and immediate len if present
+    if (!expectValue && b == 19) {
+      // consume len if present; if not yet available, try next loop
+      if (CREATE_SERIAL.available()) (void)CREATE_SERIAL.read();
+      continue;
+    }
+    // Ignore lone len marker occasionally observed
+    if (!expectValue && b == 14) {
+      continue;
+    }
+    if (!expectValue) {
+      switch (b) {
+        case 7: case 8: case 9: case 10: case 11: case 12: case 18:
+          currentId = b; expectValue = true; break;
+        default: break; // ignore noise/opcodes
       }
+    } else {
+      uint8_t val = b;
+      switch (currentId) {
+        case 7:  cachedBumpRight = (val & 0x01) != 0; cachedBumpLeft = (val & 0x02) != 0; break;
+        case 8:  cachedWall = (val != 0); break;
+        case 9:  cachedCliffL  = (val != 0); break;
+        case 10: cachedCliffFL = (val != 0); break;
+        case 11: cachedCliffFR = (val != 0); break;
+        case 12: cachedCliffR  = (val != 0); break;
+        case 18: { uint8_t prev = lastButtons; lastButtons = val; if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true; if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true; break; }
+        default: break;
+      }
+      lastStreamMs = millis();
+      bool changed = (cachedBumpLeft != prevBumpLeft) || (cachedBumpRight != prevBumpRight) ||
+                     (cachedCliffL != prevCliffL) || (cachedCliffFL != prevCliffFL) ||
+                     (cachedCliffFR != prevCliffFR) || (cachedCliffR != prevCliffR) ||
+                     (cachedWall != prevWall) || (lastButtons != prevButtons);
+      if (changed) {
+        Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
+        Serial.print(" R="); Serial.print((int)cachedBumpRight);
+        Serial.print(" cliffs=");
+        Serial.print((int)cachedCliffL); Serial.print(",");
+        Serial.print((int)cachedCliffFL); Serial.print(",");
+        Serial.print((int)cachedCliffFR); Serial.print(",");
+        Serial.print((int)cachedCliffR);
+        Serial.print(" wall="); Serial.print((int)cachedWall);
+        Serial.print(" btn="); Serial.println((int)lastButtons);
+      }
+      prevBumpLeft = cachedBumpLeft; prevBumpRight = cachedBumpRight;
+      prevCliffL = cachedCliffL; prevCliffFL = cachedCliffFL; prevCliffFR = cachedCliffFR; prevCliffR = cachedCliffR;
+      prevWall = cachedWall; prevButtons = lastButtons;
+      expectValue = false; currentId = 0;
     }
   }
 }

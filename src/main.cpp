@@ -130,6 +130,7 @@ static const char* curState = PROTO_STATE_LINKDOWN;
 #endif
 static constexpr uint8_t OI_START = 128;
 static constexpr uint8_t OI_SAFE = 131;
+static constexpr uint8_t OI_FULL = 132;
 static constexpr uint8_t OI_SENSORS = 142;
 
 static bool oi_read_u8(uint8_t packetId, uint8_t &out) {
@@ -413,7 +414,15 @@ static void pollUart(bool allowHandle) {
     if (!(ch=='\r'||ch=='\n' || (ch>=32 && ch<=126))) { tx_send(0,"ERR,parse,char"); continue; }
     if (ch=='\r' || ch=='\n') {
       if (lineLen > 0) {
-        if (allowHandle) { lineBuf[lineLen]='\0'; handleLine(lineBuf); }
+        lineBuf[lineLen] = '\0';
+        if (allowHandle) {
+          handleLine(lineBuf);
+        } else {
+          // Limited command handling even in AUTONOMOUS mode: respond to benign queries
+          if (strncmp(lineBuf, "PING", 4) == 0 || strncmp(lineBuf, "GET", 3) == 0 || strncmp(lineBuf, "STATS", 5) == 0) {
+            handleLine(lineBuf);
+          }
+        }
         lineLen=0;
       }
     } else {
@@ -546,7 +555,8 @@ void setup() {
   CREATE_SERIAL.begin(57600);
   delay(50);
   CREATE_SERIAL.write(OI_START);
-  CREATE_SERIAL.write(OI_SAFE);
+  // Create 1: operate in FULL for consistent teleop control and stream access
+  CREATE_SERIAL.write(OI_FULL);
 
   for (uint8_t i=0;i<MAX_RANGE_IDS;i++){ rangeValid[i]=false; rangeIds[i]=0; rangeVals[i]=NAN; }
   last_uart_ms = millis(); linkUp=false; modeForebrain = false; autonomousInit = false; curModeState = nullptr;

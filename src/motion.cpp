@@ -5,6 +5,7 @@
 // iRobot Create 1 Open Interface opcodes
 static constexpr uint8_t OI_START = 128;
 static constexpr uint8_t OI_SAFE = 131;
+static constexpr uint8_t OI_FULL = 132;
 static constexpr uint8_t OI_DRIVE_DIRECT = 145;
 static constexpr uint16_t VELOCITY = 200; // mm/s
 static constexpr unsigned long TICK_MS = 100; // duration of one tick
@@ -36,7 +37,8 @@ void initMotors() {
   Serial1.begin(57600);
   delay(100);
   Serial1.write(OI_START);
-  Serial1.write(OI_SAFE);
+  // Create 1: prefer FULL mode to avoid unexpected passive/safe drops during autonomous ticks
+  Serial1.write(OI_FULL);
 }
 
 /**
