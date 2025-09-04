@@ -155,16 +155,72 @@ void updateSensorStream() {
         for (uint8_t i = 0; i < spLen; ++i) sum += payloadBuf[i];
         sum += b;
         if ((sum & 0xFF) == 0) {
-          // Assume ID/Value pairs per OI manual: [id][value] ... in any order
-          if ((spLen % 2) != 0) {
-            Serial.print("[SENS] stream odd len="); Serial.println((int)spLen);
-            Serial.print("[SENS] stream raw: ");
-            for (uint8_t i = 0; i < spLen; ++i) {
-              Serial.print((int)payloadBuf[i]);
-              if (i < spLen - 1) Serial.print(",");
+          // Robust parsing: Some OI variants stream only values in the requested order (no IDs),
+          // others prefix each value with its packet ID. Support both.
+          auto pktLen = [](uint8_t id)->uint8_t {
+            switch (id) {
+              case 7: case 8: case 9: case 10: case 11: case 12: case 18: return 1; // one byte
+              // Add cases here if multi-byte packets are added to requestedPackets
+              default: return 1;
             }
-            Serial.println();
-          } else {
+          };
+          const uint8_t numPkts = (uint8_t)(sizeof(requestedPackets));
+          uint8_t expectVals = 0; for (uint8_t i=0;i<numPkts;++i) expectVals += pktLen(requestedPackets[i]);
+
+          bool parsed = false;
+          // Case A: values-only stream in requested order
+          if (spLen == expectVals) {
+            uint8_t idx = 0;
+            for (uint8_t i=0;i<numPkts;++i) {
+              uint8_t id = requestedPackets[i];
+              uint8_t len = pktLen(id);
+              // All current requested packets are 1 byte
+              uint8_t val = payloadBuf[idx];
+              idx += len;
+              switch (id) {
+                case 7:  cachedBumpRight = (val & 0x01) != 0; cachedBumpLeft = (val & 0x02) != 0; break;
+                case 9:  cachedCliffL  = (val != 0); break;
+                case 10: cachedCliffFL = (val != 0); break;
+                case 11: cachedCliffFR = (val != 0); break;
+                case 12: cachedCliffR  = (val != 0); break;
+                case 18: {
+                  uint8_t prev = lastButtons; lastButtons = val;
+                  if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true;
+                  if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
+                  break;
+                }
+                case 8: cachedWall = (val != 0); break;
+                default: break;
+              }
+            }
+            parsed = true;
+          }
+          // Case B: [id][value] pairs for each requested packet (id-prefixed)
+          else if (spLen == expectVals + numPkts) {
+            uint8_t idx = 0;
+            for (uint8_t i=0;i<numPkts && (idx+1) < spLen; ++i) {
+              uint8_t id = payloadBuf[idx++];
+              uint8_t val = payloadBuf[idx++];
+              switch (id) {
+                case 7:  cachedBumpRight = (val & 0x01) != 0; cachedBumpLeft = (val & 0x02) != 0; break;
+                case 9:  cachedCliffL  = (val != 0); break;
+                case 10: cachedCliffFL = (val != 0); break;
+                case 11: cachedCliffFR = (val != 0); break;
+                case 12: cachedCliffR  = (val != 0); break;
+                case 18: {
+                  uint8_t prev = lastButtons; lastButtons = val;
+                  if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true;
+                  if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
+                  break;
+                }
+                case 8: cachedWall = (val != 0); break;
+                default: break;
+              }
+            }
+            parsed = true;
+          }
+          // Case C: Fallback – try generic [id][value] pairs throughout
+          else if ((spLen % 2) == 0) {
             for (uint8_t i = 0; i + 1 < spLen; i += 2) {
               uint8_t id = payloadBuf[i];
               uint8_t val = payloadBuf[i + 1];
@@ -174,18 +230,22 @@ void updateSensorStream() {
                 case 10: cachedCliffFL = (val != 0); break;
                 case 11: cachedCliffFR = (val != 0); break;
                 case 12: cachedCliffR  = (val != 0); break;
-                case 18: {
-                  // Buttons: assume bit0=Play, bit2=Advance (Create 1 OI)
-                  uint8_t prev = lastButtons;
-                  lastButtons = val;
-                  if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true;
-                  if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
-                  break;
-                }
-                case 8: cachedWall = (val != 0); break; // Wall sensor boolean
-                default: break; // ignore others if present
+                case 18: { uint8_t prev = lastButtons; lastButtons = val; if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true; if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true; break; }
+                case 8: cachedWall = (val != 0); break;
+                default: break;
               }
             }
+            parsed = true;
+          }
+
+          if (!parsed) {
+            Serial.print("[SENS] stream unexpected len="); Serial.print((int)spLen);
+            Serial.print(" expectVals="); Serial.print((int)expectVals);
+            Serial.print(" pkts="); Serial.println((int)numPkts);
+            Serial.print("[SENS] raw: ");
+            for (uint8_t i = 0; i < spLen; ++i) { Serial.print((int)payloadBuf[i]); if (i < spLen - 1) Serial.print(","); }
+            Serial.println();
+          } else {
             lastStreamMs = millis();
             Serial.print("[SENS] stream bumps L="); Serial.print((int)cachedBumpLeft);
             Serial.print(" R="); Serial.print((int)cachedBumpRight);
