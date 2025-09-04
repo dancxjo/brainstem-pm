@@ -199,3 +199,73 @@ void pokeOI() {
   // benign drive to keep things alive
   writeHighLow(OI_DRIVE, 0, 0);
 }
+
+void playStartupJingle() {
+  // Cheerful rising triad
+  const uint8_t n[] = {72, 76, 79, 84};
+  const uint8_t d[] = {6, 6, 6, 8};
+  defineAndPlay(10, n, d, 4);
+}
+
+void playShutdownSigh() {
+  // Descending slow tones
+  const uint8_t n[] = {72, 67, 62};
+  const uint8_t d[] = {12, 12, 16};
+  defineAndPlay(11, n, d, 3);
+}
+
+void playForebrainTrill() {
+  // Quick celebratory trill
+  const uint8_t n[] = {76, 79, 83, 88};
+  const uint8_t d[] = {4, 4, 4, 6};
+  defineAndPlay(12, n, d, 4);
+}
+
+void playLonelyTune() {
+  // Minor 3rd down-up, searching feel
+  const uint8_t n[] = {69, 65, 69};
+  const uint8_t d[] = {8, 8, 12};
+  defineAndPlay(13, n, d, 3);
+}
+
+void playOopsChirp() {
+  // Playful short chirp
+  const uint8_t n[] = {84, 88};
+  const uint8_t d[] = {3, 3};
+  defineAndPlay(14, n, d, 2);
+}
+
+void playLowBatteryTone() {
+  // Tired yawning: low down then up slightly
+  const uint8_t n[] = {55, 52, 55};
+  const uint8_t d[] = {10, 10, 14};
+  defineAndPlay(15, n, d, 3);
+}
+
+void playCliffWhoa() {
+  // Dramatic swoop down
+  const uint8_t n[] = {84, 76, 67};
+  const uint8_t d[] = {4, 6, 12};
+  defineAndPlay(9, n, d, 3);
+}
+
+void playEstopAlarmSad() {
+  // Alarm blips then a low long tone
+  const uint8_t n[] = {96, 96, 48};
+  const uint8_t d[] = {4, 4, 16};
+  defineAndPlay(16, n, d, 3);
+}
+
+void playIdleChirp() {
+  // Small bird-like chirp
+  const uint8_t n[] = {88, 92};
+  const uint8_t d[] = {2, 3};
+  defineAndPlay(17, n, d, 2);
+}
+
+void playPurrMelody() {
+  // Gentle repetitive notes
+  const uint8_t n[] = {64, 66, 64, 66};
+  const uint8_t d[] = {6, 6, 6, 6};
+  defineAndPlay(18, n, d, 4);
+}

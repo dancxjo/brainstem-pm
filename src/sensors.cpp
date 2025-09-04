@@ -43,9 +43,14 @@ enum StreamParseState { WAIT_HEADER, WAIT_LEN, READ_PAYLOAD, WAIT_CHECKSUM };
 static StreamParseState spState = WAIT_HEADER;
 static uint8_t spLen = 0;   // OI stream length is one byte
 static uint8_t spRead = 0;
-static const uint8_t requestedPackets[] = { 7, 9, 10, 11, 12 };
-static uint8_t payloadBuf[64];
+static const uint8_t requestedPackets[] = { 7, 9, 10, 11, 12, 18, 27 };
+static uint8_t payloadBuf[32];
 static unsigned long lastStreamMs = 0;
+// Cached wall and button edges
+static bool cachedWall = false;
+static uint8_t lastButtons = 0;
+static volatile bool btnPlayEdge = false;
+static volatile bool btnAdvEdge = false;
 
 // Read exactly len bytes from CREATE_SERIAL within timeoutMs. Returns true if full buffer read.
 static bool readBytes(uint8_t* dst, size_t len, unsigned long timeoutMs) {
@@ -100,6 +105,18 @@ void beginSensorStream() {
   Serial.println("[SENS] OI stream started (7,9,10,11,12)");
 }
 
+void pauseSensorStream() {
+  // Pause any ongoing OI stream
+  CREATE_SERIAL.write(OI_PAUSE);
+  CREATE_SERIAL.write((uint8_t)0);
+}
+
+void resumeSensorStream() {
+  // Resume an already configured OI stream
+  CREATE_SERIAL.write(OI_PAUSE);
+  CREATE_SERIAL.write((uint8_t)1);
+}
+
 void updateSensorStream() {
   while (CREATE_SERIAL.available()) {
     int bi = CREATE_SERIAL.read();
@@ -143,6 +160,15 @@ void updateSensorStream() {
                 case 10: cachedCliffFL = (val != 0); break;
                 case 11: cachedCliffFR = (val != 0); break;
                 case 12: cachedCliffR  = (val != 0); break;
+                case 18: {
+                  // Buttons: assume bit0=Play, bit2=Advance (Create 1 OI)
+                  uint8_t prev = lastButtons;
+                  lastButtons = val;
+                  if ((!(prev & 0x01)) && (val & 0x01)) btnPlayEdge = true;
+                  if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
+                  break;
+                }
+                case 27: cachedWall = (val != 0); break; // Wall sensor boolean
                 default: break; // ignore others if present
               }
             }
@@ -153,7 +179,9 @@ void updateSensorStream() {
             Serial.print((int)cachedCliffL); Serial.print(",");
             Serial.print((int)cachedCliffFL); Serial.print(",");
             Serial.print((int)cachedCliffFR); Serial.print(",");
-            Serial.println((int)cachedCliffR);
+            Serial.print((int)cachedCliffR);
+            Serial.print(" wall="); Serial.print((int)cachedWall);
+            Serial.print(" btn="); Serial.println((int)lastButtons);
           }
         } else {
           Serial.println("[SENS] stream checksum error; resyncing");
@@ -216,5 +244,19 @@ bool bumperEventTriggeredAndClear() {
   bool was = bumperEventFlag;
   bumperEventFlag = false;
   if (was) Serial.println("[SENS] bumper ISR event");
+  return was;
+}
+
+bool wallDetected() { return cachedWall; }
+
+bool playButtonPressedAndClear() {
+  bool was = btnPlayEdge;
+  btnPlayEdge = false;
+  return was;
+}
+
+bool advanceButtonPressedAndClear() {
+  bool was = btnAdvEdge;
+  btnAdvEdge = false;
   return was;
 }

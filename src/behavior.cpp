@@ -8,6 +8,7 @@
 enum State {
   CONNECTING,
   WAITING,
+  WALL_FOLLOWING,
   SEEKING,
   ADVANCING,
   RECOILING,
@@ -32,6 +33,8 @@ static unsigned castingPhase = 0;     // toggles small left/right arcs while see
 static unsigned bumpsRecently = 0;    // habituation counter
 static unsigned long lastBumpMs = 0;  // timestamp of last bumper event
 static unsigned long bumperFlashUntil = 0; // LED alert window
+// Wall-follow settings
+static bool followRight = true; // default side
 // Reconnect backoff state
 static unsigned long nextConnectAttemptMs = 0;
 static unsigned connectRetry = 0; // exponential backoff counter
@@ -39,6 +42,7 @@ static const unsigned long CONNECT_BASE_MS = 500;   // initial interval
 static const unsigned long CONNECT_MAX_MS  = 8000;  // cap interval
 
 static inline void enterState(State s) {
+  State prev = currentState;
   auto name = [](State st) -> const char* {
     switch (st) {
       case CONNECTING: return "CONNECTING";
@@ -65,6 +69,11 @@ static inline void enterState(State s) {
   }
   currentState = s;
   stateEnterMs = millis();
+  // Event-based expressions
+  if (prev == RECOILING && s == SEEKING) {
+    // After escaping a bump, playful chirp
+    playOopsChirp();
+  }
   // reset per-state counters where appropriate
   if (s == ADVANCING) {
     runTicksSoFar = 0;
@@ -83,6 +92,9 @@ void initializeBehavior() {
   turnBias = (random(2) == 0) ? -1 : 1;
 }
 
+void setWallFollowSide(bool right) { followRight = right; }
+void toggleWallFollowSide() { followRight = !followRight; }
+
 void updateBehavior() {
   if (millis() - lastTick < tickInterval) return;
   lastTick = millis();
@@ -92,8 +104,7 @@ void updateBehavior() {
   if (!(currentState == CONNECTING && !oiConnected())) {
     keepAliveTick();
   }
-  // Ingest any pending sensor stream frames
-  updateSensorStream();
+  // Sensor stream is polled in main; cached values are current
 
   // Handle asynchronous bumper interrupt: play song, flash LEDs, and recoil
   if (bumperEventTriggeredAndClear()) {
@@ -102,10 +113,20 @@ void updateBehavior() {
     enterState(RECOILING);
   }
 
+  // (Optional pet-me mode could be added here by counting rapid ISR taps.)
+
+  // Safety preemption: if a hazard is present, force immediate transition
+  if (cliffDetected()) {
+    enterState(FROZEN);
+  } else if (bumperTriggered()) {
+    enterState(RECOILING);
+  }
+
   // Reflect current state on LEDs each tick, with alert override window
   switch (currentState) {
     case CONNECTING:     setLedPattern(PATTERN_CONNECTING); break;
     case WAITING:        setLedPattern(PATTERN_WAITING); break;
+    case WALL_FOLLOWING: setLedPattern(PATTERN_ADVANCING); break;
     case SEEKING:        setLedPattern(PATTERN_SEEKING); break;
     case ADVANCING:      setLedPattern(PATTERN_ADVANCING); break;
     case RECOILING:      setLedPattern(PATTERN_RECOILING); break;
@@ -120,6 +141,8 @@ void updateBehavior() {
 
   switch (currentState) {
     case CONNECTING:
+      // Ensure motors are idle while attempting connection
+      stopAllMotors();
       // If we are already seeing the stream, proceed and reset backoff.
       if (oiConnected()) {
         connectRetry = 0;
@@ -151,10 +174,29 @@ void updateBehavior() {
       break;
 
     case WAITING:
+      // Idle: keep motors stopped during brief wait
+      stopAllMotors();
       if (!oiConnected()) { enterState(CONNECTING); break; }
       delayBriefly();
-      enterState(SEEKING);
+      enterState(WALL_FOLLOWING);
       break;
+
+    case WALL_FOLLOWING: {
+      if (!oiConnected()) { enterState(CONNECTING); break; }
+      // Simple heuristic wall follow using OI 'wall' boolean
+      if (cliffDetected()) { enterState(FROZEN); break; }
+      if (bumperTriggered()) { enterState(RECOILING); break; }
+      if (wallDetected()) {
+        // When on a wall, bias toward it slightly and move forward
+        if (followRight) veerRightOneTick(); else veerLeftOneTick();
+        forwardOneTick();
+      } else {
+        // Search for wall: rotate toward the side we follow
+        if (followRight) turnRightOneTick(); else turnLeftOneTick();
+      }
+      enterState(WALL_FOLLOWING);
+      break;
+    }
 
     case SEEKING: {
       if (!oiConnected()) { enterState(CONNECTING); break; }
@@ -246,7 +288,7 @@ void updateBehavior() {
       }
       // Start a shorter forward run after recoil to test the new heading
       runTicksTarget = 4;
-      enterState(SEEKING);
+      enterState(WALL_FOLLOWING);
       break;
 
     case TURNING_LEFT:
