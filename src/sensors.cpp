@@ -43,7 +43,15 @@ enum StreamParseState { WAIT_HEADER, WAIT_LEN, READ_PAYLOAD, WAIT_CHECKSUM };
 static StreamParseState spState = WAIT_HEADER;
 static uint8_t spLen = 0;   // OI stream length is one byte
 static uint8_t spRead = 0;
-static const uint8_t requestedPackets[] = { 7, 9, 10, 11, 12, 18, 27 };
+// Stream single-byte packets only to keep parsing simple:
+//  - 7  = Bumps/Wheel Drops (1 byte)
+//  - 9  = Cliff Left (1 byte)
+//  - 10 = Cliff Front Left (1 byte)
+//  - 11 = Cliff Front Right (1 byte)
+//  - 12 = Cliff Right (1 byte)
+//  - 18 = Buttons (1 byte)
+//  - 8  = Wall (boolean, 1 byte)
+static const uint8_t requestedPackets[] = { 7, 9, 10, 11, 12, 18, 8 };
 static uint8_t payloadBuf[32];
 static unsigned long lastStreamMs = 0;
 // Cached wall and button edges
@@ -102,7 +110,7 @@ void beginSensorStream() {
   spLen = 0;
   spRead = 0;
   while (CREATE_SERIAL.available()) { (void)CREATE_SERIAL.read(); }
-  Serial.println("[SENS] OI stream started (7,9,10,11,12)");
+  Serial.println("[SENS] OI stream started (7,9,10,11,12,18,8)");
 }
 
 void pauseSensorStream() {
@@ -150,6 +158,12 @@ void updateSensorStream() {
           // Assume ID/Value pairs per OI manual: [id][value] ... in any order
           if ((spLen % 2) != 0) {
             Serial.print("[SENS] stream odd len="); Serial.println((int)spLen);
+            Serial.print("[SENS] stream raw: ");
+            for (uint8_t i = 0; i < spLen; ++i) {
+              Serial.print((int)payloadBuf[i]);
+              if (i < spLen - 1) Serial.print(",");
+            }
+            Serial.println();
           } else {
             for (uint8_t i = 0; i + 1 < spLen; i += 2) {
               uint8_t id = payloadBuf[i];
@@ -168,7 +182,7 @@ void updateSensorStream() {
                   if ((!(prev & 0x04)) && (val & 0x04)) btnAdvEdge = true;
                   break;
                 }
-                case 27: cachedWall = (val != 0); break; // Wall sensor boolean
+                case 8: cachedWall = (val != 0); break; // Wall sensor boolean
                 default: break; // ignore others if present
               }
             }
