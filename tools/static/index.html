@@ -10,12 +10,19 @@
       .hud { margin-top: 12px; padding: 8px; background: #f6f6f6; border-radius: 6px; }
       .keys { font-family: monospace; padding: 4px 8px; background: #eee; border-radius: 4px; }
       .pad { display: grid; grid-template-columns: 60px 60px 60px; grid-template-rows: 60px 60px 60px; gap: 6px; margin: 10px 0; }
-      .pad div { background: #fafafa; border: 1px solid #ddd; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+      .pad .cell { background: #fafafa; border: 1px solid #ddd; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+      .pad button.cell { cursor: pointer; font-size: 20px; user-select: none; }
       .on { background: #cdeffd; border-color: #7fd1f6; }
       #log { height: 180px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; background: #111; color: #aee; padding: 8px; border-radius: 6px; }
       button { padding: 6px 10px; }
       input[type=range] { width: 200px; }
       .small { color: #666; font-size: 12px; }
+      /* Joystick */
+      .joy-wrap { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+      #joystick { position: relative; width: 180px; height: 180px; border-radius: 50%; background: #f4f4f4; border: 1px solid #ddd; touch-action: none; }
+      #joyKnob { position: absolute; width: 64px; height: 64px; border-radius: 50%; background: #e8f6ff; border: 2px solid #7fd1f6; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+      .wasd { display: grid; grid-template-columns: 50px 50px 50px; grid-template-rows: 50px 50px; gap: 6px; }
+      .wasd .cell { font-weight: 600; }
     </style>
   </head>
   <body>
@@ -38,14 +45,34 @@
 
     <div class="pad" id="pad">
       <div></div>
-      <div id="kUp">↑</div>
+      <button id="kUp" class="cell" type="button" aria-label="Forward">↑</button>
       <div></div>
-      <div id="kLeft">←</div>
+      <button id="kLeft" class="cell" type="button" aria-label="Turn Left">←</button>
       <div></div>
-      <div id="kRight">→</div>
+      <button id="kRight" class="cell" type="button" aria-label="Turn Right">→</button>
       <div></div>
-      <div id="kDown">↓</div>
+      <button id="kDown" class="cell" type="button" aria-label="Reverse">↓</button>
       <div></div>
+    </div>
+
+    <div class="joy-wrap">
+      <div>
+        <div class="small">Touch Joystick</div>
+        <div id="joystick" aria-label="Touch joystick">
+          <div id="joyKnob"></div>
+        </div>
+      </div>
+      <div>
+        <div class="small">WASD Pad</div>
+        <div class="wasd">
+          <div></div>
+          <button id="kW" class="cell" type="button" aria-label="W">W</button>
+          <div></div>
+          <button id="kA" class="cell" type="button" aria-label="A">A</button>
+          <button id="kS" class="cell" type="button" aria-label="S">S</button>
+          <button id="kD" class="cell" type="button" aria-label="D">D</button>
+        </div>
+      </div>
     </div>
 
     <div class="small" id="conn">Connecting…</div>
@@ -76,6 +103,9 @@
       let keys = { up:false, down:false, left:false, right:false };
       let lastSend = 0;
       let lastTwist = {vx: 0, wz: 0};
+      // Joystick state
+      let joyActive = false;
+      let joyVx = 0, joyWz = 0;
 
       function connect() {
         const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
@@ -99,9 +129,12 @@
       const send = (obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
 
       function computeTwist() {
-        let vx = 0, wz = 0;
         const vmax = +vmaxEl.value;
         const wmax = +wmaxEl.value;
+        if (joyActive) {
+          return { vx: joyVx, wz: joyWz };
+        }
+        let vx = 0, wz = 0;
         if (keys.up) vx += vmax;
         if (keys.down) vx -= vmax;
         if (keys.left) wz += wmax;
@@ -112,7 +145,7 @@
       function tick() {
         const now = performance.now();
         // 20 Hz when keys active, else 1 Hz heartbeat to keep link up
-        const active = keys.up || keys.down || keys.left || keys.right;
+        const active = joyActive || keys.up || keys.down || keys.left || keys.right;
         const period = active ? 50 : 1000;
         if (now - lastSend >= period) {
           const {vx, wz} = computeTwist();
@@ -136,6 +169,101 @@
         if (k === 'ArrowRight') { keys.right = v; padOn('kRight', v); }
       }
 
+      // Make on-screen arrows behave like real buttons (mouse/touch)
+      function bindPadButton(id, keyName) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const press = (e) => { e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch {} setKey(keyName, true); };
+        const release = (e) => { e && e.preventDefault && e.preventDefault(); setKey(keyName, false); };
+        if (window.PointerEvent) {
+          el.addEventListener('pointerdown', press);
+          el.addEventListener('pointerup', release);
+          el.addEventListener('pointercancel', release);
+          el.addEventListener('lostpointercapture', release);
+        } else {
+          // Fallback for older browsers
+          el.addEventListener('mousedown', press);
+          el.addEventListener('mouseup', release);
+          el.addEventListener('mouseleave', release);
+          el.addEventListener('touchstart', (e) => { press(e); });
+          el.addEventListener('touchend', release);
+          el.addEventListener('touchcancel', release);
+        }
+      }
+      bindPadButton('kUp', 'ArrowUp');
+      bindPadButton('kDown', 'ArrowDown');
+      bindPadButton('kLeft', 'ArrowLeft');
+      bindPadButton('kRight', 'ArrowRight');
+
+      // WASD overlay mapped to arrows
+      bindPadButton('kW', 'ArrowUp');
+      bindPadButton('kS', 'ArrowDown');
+      bindPadButton('kA', 'ArrowLeft');
+      bindPadButton('kD', 'ArrowRight');
+
+      // Joystick interactions
+      (function setupJoystick(){
+        const joy = document.getElementById('joystick');
+        const knob = document.getElementById('joyKnob');
+        if (!joy || !knob) return;
+        const center = () => { knob.style.left = '50%'; knob.style.top = '50%'; };
+        center();
+        const getRect = () => joy.getBoundingClientRect();
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+        let pid = null;
+        const onDown = (e) => {
+          e.preventDefault();
+          const pId = (e.pointerId != null) ? e.pointerId : null;
+          pid = pId;
+          try { if (pId != null) joy.setPointerCapture(pId); } catch {}
+          joyActive = true;
+          onMove(e);
+        };
+        const onMove = (e) => {
+          if (!joyActive) return;
+          const r = getRect();
+          const cx = r.left + r.width/2;
+          const cy = r.top + r.height/2;
+          const x = (e.clientX != null) ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : cx);
+          const y = (e.clientY != null) ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : cy);
+          let dx = x - cx;
+          let dy = y - cy;
+          const maxR = r.width/2 - 6; // padding
+          const dist = Math.hypot(dx, dy) || 1;
+          const scale = Math.min(1, dist / maxR);
+          dx = dx / dist * scale * maxR;
+          dy = dy / dist * scale * maxR;
+          knob.style.left = `${50 + (dx / (r.width/2)) * 50}%`;
+          knob.style.top  = `${50 + (dy / (r.height/2)) * 50}%`;
+          const vmax = +vmaxEl.value;
+          const wmax = +wmaxEl.value;
+          // Map: up (negative dy) -> +vx; left (negative dx) -> +wz
+          joyVx = clamp(-dy / maxR, -1, 1) * vmax;
+          joyWz = clamp(-dx / maxR, -1, 1) * wmax;
+        };
+        const onUp = (e) => {
+          e && e.preventDefault && e.preventDefault();
+          joyActive = false; joyVx = 0; joyWz = 0; center();
+          if (pid != null) { try { joy.releasePointerCapture(pid); } catch {} pid = null; }
+        };
+        if (window.PointerEvent) {
+          joy.addEventListener('pointerdown', onDown);
+          joy.addEventListener('pointermove', onMove);
+          joy.addEventListener('pointerup', onUp);
+          joy.addEventListener('pointercancel', onUp);
+          joy.addEventListener('lostpointercapture', onUp);
+        } else {
+          joy.addEventListener('mousedown', onDown);
+          joy.addEventListener('mousemove', onMove);
+          joy.addEventListener('mouseup', onUp);
+          joy.addEventListener('mouseleave', onUp);
+          joy.addEventListener('touchstart', onDown, {passive:false});
+          joy.addEventListener('touchmove', onMove, {passive:false});
+          joy.addEventListener('touchend', onUp, {passive:false});
+          joy.addEventListener('touchcancel', onUp, {passive:false});
+        }
+      })();
+
       window.addEventListener('keydown', (e) => {
         if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Spacebar"].includes(e.key)) e.preventDefault();
         if (e.repeat) return;
@@ -154,4 +282,3 @@
     </script>
   </body>
   </html>
-
