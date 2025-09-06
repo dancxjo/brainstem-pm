@@ -9,6 +9,8 @@
 #include "motion.h"
 #include "utils.h"
 #include "passthrough.h"
+#include "behavior.h"
+#include "presence.h"
 
 // ---- UART-centric brainstem v1.0 ----
 // Select the hardware serial used to talk to the Create OI early so helpers can use it.
@@ -37,6 +39,7 @@ static uint16_t lineLen = 0;
 static unsigned long last_uart_ms = 0;
 static bool linkUp = false;
 static const char* curModeState = nullptr; // edge-dedup for STATE mode telemetry
+static bool forebrainMode = false; // false=AUTONOMOUS behavior until handshake
 
 // Forward declare tx_send so helpers can log before its definition
 static void tx_send(uint8_t pri, const char* base);
@@ -259,6 +262,14 @@ static void publish_link(uint8_t up) {
   tx_send(0, buf);
 }
 
+// Called on any USB serial activity to keep link/idle state updated.
+// Important: Avoid emitting any traffic while in passthrough to ensure
+// the host sees only OI bytes until interpreter mode.
+void usbLinkActivity() {
+  last_uart_ms = millis();
+  if (!linkUp && !passthroughActive()) { linkUp = true; publish_link(1); }
+}
+
 static void publish_hello() {
   char buf[64];
   snprintf(buf, sizeof(buf), "HELLO,proto=1.0,build=%s %s", __DATE__, __TIME__);
@@ -418,14 +429,23 @@ static void handleLine(char* line) {
 
 static void pollUart(bool allowHandle) {
   while (Serial.available()) {
-    int c = Serial.read(); if (c < 0) break; char ch = (char)c; unsigned long now=millis(); last_uart_ms = now;
-    if (!linkUp) { linkUp=true; publish_link(1); }
+    int c = Serial.read(); if (c < 0) break; char ch = (char)c; usbLinkActivity();
     if (ch=='\0') continue; // strip NULs
     if (!(ch=='\r'||ch=='\n' || (ch>=32 && ch<=126))) { tx_send(0,"ERR,parse,char"); continue; }
     if (ch=='\r' || ch=='\n') {
       if (lineLen > 0) {
         lineBuf[lineLen] = '\0';
-        if (allowHandle) {
+        // First complete line acts as handshake: switch to FOREBRAIN mode
+        if (!forebrainMode) {
+          forebrainMode = true;
+          publish_hello();
+          publish_health_boot();
+          publish_mode_state(PROTO_STATE_FOREBRAIN);
+          // Enable full-speed behavior if it is used; in FOREBRAIN, controlTick is active
+          setBehaviorWanderEnabled(true);
+          setMotionSpeedScale(1.0f);
+        }
+        if (allowHandle || forebrainMode) {
           handleLine(lineBuf);
         } else {
           // Limited command handling even in AUTONOMOUS mode: respond to benign queries
@@ -519,21 +539,34 @@ void setup() {
   // Initialize Create OI and enter FULL mode
   initConnection();
   beginSensorStream();
-  passthroughEnable();
+  // Start in AUTONOMOUS mode: do not enable passthrough until midbrain handshakes
   for (uint8_t i=0;i<MAX_RANGE_IDS;i++){ rangeValid[i]=false; rangeIds[i]=0; rangeVals[i]=NAN; }
   last_uart_ms = millis(); linkUp=false; curModeState = nullptr;
   tx_last_ms = millis(); tx_tokens = (float)param_tx_bytes_per_s; // allow initial burst
   initLeds();
-  initIdle();
+  // Enter idle sooner to keep lifelike fidgets if host stays quiet
+  initIdle(60000); // 60s to idle
+  initPresence(); // start immediate lifelike cues (LED/sound/micro-motion)
+  // Bring up behavior immediately
+  initializeBehavior();
+  setBehaviorWanderEnabled(false); // sedate: no translation until midbrain handshakes
+  setMotionSpeedScale(0.2f);       // very gentle fidgets by default
+  // Begin in passthrough so host sees only OI bytes until handshake
+  passthroughEnable();
+  // On boot, chime and run a greeter LED slide while waiting
+#ifdef ENABLE_TUNES
+  playStartupJingle();
+#endif
+  setLedPattern(PATTERN_GREETER_SLIDE);
 }
 
 void loop() {
-  bool wasPass = passthroughActive();
-  if (wasPass) {
+  bool nowPass = passthroughActive();
+  if (nowPass) {
     passthroughPump();
   } else {
-    // 1) Poll USB serial and handle commands
-    pollUart(true);
+    // 1) Poll USB serial and handle commands (AUTONOMOUS before handshake)
+    pollUart(forebrainMode);
   }
 
   unsigned long now = millis();
@@ -541,9 +574,14 @@ void loop() {
   updateIdle(usbUp);
   if (idleIsSleeping()) { updateLeds(); enforceRobotWatchdog(); return; }
 
-  // 2) Keep OI alive and run control tick
-  keepAliveTick();
-  if (now - lastTickMs >= CONTROL_DT_MS) { lastTickMs = now; controlTick(); }
+  // 2) Keep OI alive and run appropriate control
+  if (forebrainMode) {
+    keepAliveTick();
+    if (now - lastTickMs >= CONTROL_DT_MS) { lastTickMs = now; controlTick(); }
+  } else {
+    // AUTONOMOUS behavior governs motion
+    updateBehavior();
+  }
 
   // 3) Maintain sensor stream and attempt reconnects
   updateSensorStream();
@@ -552,22 +590,27 @@ void loop() {
 
   // 4) LED policy: left=robot OI, right=USB client (suppressed during idle)
   bool robotUp = oiConnected();
-  if (!idleIsActive()) {
-    static bool prevRobot=false, prevUsb=false; static unsigned long robotEdgeMs=0, usbEdgeMs=0;
-    if (robotUp != prevRobot) { robotEdgeMs = now; prevRobot = robotUp; }
-    if (usbUp != prevUsb) { usbEdgeMs = now; prevUsb = usbUp; }
-    const unsigned long FAST_BLINK_MS = 1000;
-    if (!robotUp) {
-      setLedPattern(PATTERN_SEEKING); // left slow, right off
-    } else if (!usbUp) {
-      setLedPattern(PATTERN_SEEKING_RIGHT); // right slow, left off
+  if (!idleIsActive() && forebrainMode) {
+    // Allow presence to temporarily drive LEDs with random idle-like flicker
+    if (presenceLedOverlayActive()) {
+      setLedPattern((LedPattern)presenceOverlayPattern());
     } else {
-      bool robotJust = (now - robotEdgeMs) < FAST_BLINK_MS;
-      bool usbJust = (now - usbEdgeMs) < FAST_BLINK_MS;
-      if (robotJust && usbJust) setLedPattern(PATTERN_ALERT); // alternate both briefly
-      else if (robotJust) setLedPattern(PATTERN_TURNING_LEFT); // left fast
-      else if (usbJust) setLedPattern(PATTERN_TURNING_RIGHT); // right fast
-      else setLedPattern(PATTERN_BOTH_SOLID); // both solid when fully up
+      static bool prevRobot=false, prevUsb=false; static unsigned long robotEdgeMs=0, usbEdgeMs=0;
+      if (robotUp != prevRobot) { robotEdgeMs = now; prevRobot = robotUp; }
+      if (usbUp != prevUsb) { usbEdgeMs = now; prevUsb = usbUp; }
+      const unsigned long FAST_BLINK_MS = 1000;
+      if (!robotUp) {
+        setLedPattern(PATTERN_SEEKING); // left slow, right off
+      } else if (!usbUp) {
+        setLedPattern(PATTERN_SEEKING_RIGHT); // right slow, left off
+      } else {
+        bool robotJust = (now - robotEdgeMs) < FAST_BLINK_MS;
+        bool usbJust = (now - usbEdgeMs) < FAST_BLINK_MS;
+        if (robotJust && usbJust) setLedPattern(PATTERN_ALERT); // alternate both briefly
+        else if (robotJust) setLedPattern(PATTERN_TURNING_LEFT); // left fast
+        else if (usbJust) setLedPattern(PATTERN_TURNING_RIGHT); // right fast
+        else setLedPattern(PATTERN_BOTH_SOLID); // both solid when fully up
+      }
     }
   }
 
@@ -575,12 +618,8 @@ void loop() {
   updateLeds();
   enforceRobotWatchdog();
 
-  bool nowPass = passthroughActive();
-  if (wasPass && !nowPass) {
-    publish_hello();
-    publish_health_boot();
-    publish_mode_state(PROTO_STATE_FOREBRAIN);
-  }
+  // Run presence late so micro-motions happen after safety/LED updates; it is self-guarded
+  updatePresence(passthroughActive(), idleIsSleeping());
 }
 
 #else // BRAINSTEM_UART

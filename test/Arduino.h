@@ -123,3 +123,6 @@ static USBSerial Serial;
 #ifndef RXLED1
 #define RXLED1 do {} while (0)
 #endif
+
+// Brainstem UART build calls this to mark USB activity; provide a no-op stub for tests
+inline void usbLinkActivity() {}

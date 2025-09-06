@@ -57,6 +57,7 @@ void setLedPattern(LedPattern p) {
         case PATTERN_IDLE: return "IDLE";
         case PATTERN_SEEKING_RIGHT: return "SEEKING_RIGHT";
         case PATTERN_BOTH_SOLID: return "BOTH_SOLID";
+        case PATTERN_GREETER_SLIDE: return "GREETER_SLIDE";
       }
       return "?";
     };
@@ -126,6 +127,18 @@ static void patternAt(unsigned long tMs, bool &txOn, bool &rxOn) {
     case PATTERN_BOTH_SOLID:
       txOn = true; rxOn = true;
       break;
+    case PATTERN_GREETER_SLIDE: {
+      // Bounce between TX and RX with gradually increasing speed over ~6s
+      // Start period ~800ms, ramp to ~150ms
+      const unsigned long rampMs = 6000;
+      float frac = (tMs >= rampMs) ? 1.0f : (float)tMs / (float)rampMs;
+      unsigned long period = (unsigned long)(800 - (650 * frac));
+      if (period < 150) period = 150;
+      bool phase = ((tMs / period) % 2) == 0;
+      txOn = phase;
+      rxOn = !phase;
+      break;
+    }
   }
 }
 

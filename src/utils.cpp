@@ -23,6 +23,8 @@ static unsigned long lastKeepaliveMs = 0;
 // Re-enter FULL guard: periodically reassert OI_FULL to avoid falling back to Passive
 static const unsigned long FULL_GUARD_INTERVAL_MS = 1000;
 static unsigned long lastFullAssertMs = 0;
+// Track current OI mode; start in SAFE for initial boot
+static uint8_t g_currentOiMode = OI_SAFE;
 // Watchdog: require periodic pet; if missed, force stop
 static const unsigned long ROBOT_WATCHDOG_TIMEOUT_MS = 300; // ms
 static unsigned long lastRobotWatchdogMs = 0;
@@ -46,7 +48,9 @@ void initConnection() {
   // Enter OI and take control
   CREATE_SERIAL.write(OI_START);
   delay(20);
-  CREATE_SERIAL.write(OI_FULL); // Full control mode (vs SAFE)
+  // Start in SAFE so robot can play music and blink safely without full control
+  CREATE_SERIAL.write(OI_SAFE);
+  g_currentOiMode = OI_SAFE;
   delay(20);
   lastFullAssertMs = millis();
 
@@ -60,9 +64,9 @@ void initConnection() {
 void keepAliveTick() {
   unsigned long now = millis();
   if (now - lastKeepaliveMs >= KEEPALIVE_INTERVAL_MS) {
-    // Re-enter FULL periodically to guard against mode drops
+    // Re-assert current OI mode periodically to guard against drops
     if (now - lastFullAssertMs >= FULL_GUARD_INTERVAL_MS) {
-      CREATE_SERIAL.write(OI_FULL);
+      CREATE_SERIAL.write(g_currentOiMode);
       lastFullAssertMs = now;
     }
     // No-op drive (velocity 0, radius 0) acts as a benign keepalive
@@ -74,7 +78,7 @@ void keepAliveTick() {
 void oiFullGuardTick() {
   unsigned long now = millis();
   if (now - lastFullAssertMs >= FULL_GUARD_INTERVAL_MS) {
-    CREATE_SERIAL.write(OI_FULL);
+    CREATE_SERIAL.write(g_currentOiMode);
     lastFullAssertMs = now;
   }
 }
@@ -105,28 +109,41 @@ void delayBriefly() {
 }
 
 void randomWiggle() {
-  if (random(2) == 0) turnLeftOneTick();
-  else turnRightOneTick();
+  // Use gentler eased turns for idle fidgets to avoid jerky motion
+  if (random(2) == 0) gentleTurnLeft();
+  else gentleTurnRight();
 }
 
 void turnRandomly() {
   if (random(2) == 0) {
-    turnLeftOneTick();
-    delay(200);
+    gentleTurnLeft();
+    delay(120);
   } else {
-    turnRightOneTick();
-    delay(200);
+    gentleTurnRight();
+    delay(120);
   }
 }
 
 void pokeOI() {
-  // Minimal, repeatable handshake to wake OI and enter FULL mode
+  // Minimal, repeatable handshake to wake OI and re-assert current mode
   CREATE_SERIAL.write(OI_START);
   delay(20);
-  CREATE_SERIAL.write(OI_FULL);
+  CREATE_SERIAL.write(g_currentOiMode);
   delay(20);
   // benign drive to keep things alive
   writeHighLow(OI_DRIVE, 0, 0);
+}
+
+void setOiModeSafe() {
+  CREATE_SERIAL.write(OI_SAFE);
+  g_currentOiMode = OI_SAFE;
+  lastFullAssertMs = millis();
+}
+
+void setOiModeFull() {
+  CREATE_SERIAL.write(OI_FULL);
+  g_currentOiMode = OI_FULL;
+  lastFullAssertMs = millis();
 }
 
 #ifdef ENABLE_TUNES

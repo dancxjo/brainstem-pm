@@ -14,7 +14,8 @@ enum LedPattern {
   PATTERN_ALERT,
   PATTERN_IDLE,           // random asynchronous pulses
   PATTERN_SEEKING_RIGHT,   // RX slow blink, TX off
-  PATTERN_BOTH_SOLID       // both LEDs solid on
+  PATTERN_BOTH_SOLID,      // both LEDs solid on
+  PATTERN_GREETER_SLIDE    // bounce between RX/TX; accelerates gradually
 };
 
 void initLeds();

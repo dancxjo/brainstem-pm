@@ -8,6 +8,9 @@ void turnRandomly();
 void keepAliveTick();
 // Periodically re-assert OI FULL mode to recover from passive drops
 void oiFullGuardTick();
+// Explicitly set the OI mode. SAFE preserves built-in protections; FULL disables them.
+void setOiModeSafe();
+void setOiModeFull();
 void playBumperSong();
 // Play a short, distinct song for a given state id (0-15 supported by OI)
 void playStateSong(uint8_t songId);

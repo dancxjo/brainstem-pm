@@ -20,6 +20,7 @@ enum State {
 static State currentState = CONNECTING;
 static unsigned long lastTick = 0;
 const unsigned long tickInterval = 100; // ms
+static bool wanderEnabled = false; // default sedate: no translation until enabled
 
 // Micro-behavior internal state inspired by simple animal foraging:
 // - run-and-cast: forward "runs" with gentle bias, punctuated by casting (small arcs)
@@ -87,6 +88,8 @@ void initializeBehavior() {
   turnBias = (random(2) == 0) ? -1 : 1;
 }
 
+void setBehaviorWanderEnabled(bool enabled) { wanderEnabled = enabled; }
+
 void setWallFollowSide(bool right) { followRight = right; }
 void toggleWallFollowSide() { followRight = !followRight; }
 
@@ -106,6 +109,15 @@ void updateBehavior() {
     playBumperSong();
     bumperFlashUntil = millis() + 600; // flash for 0.6s
     enterState(RECOILING);
+  }
+
+  // Sedate mode: fidget in place only (no forward/back) until midbrain handshake enables wander
+  if (!wanderEnabled) {
+    setLedPattern(PATTERN_WAITING);
+    // Use eased in-place turns for lifelike motion
+    if (random(2) == 0) gentleTurnLeft(); else gentleTurnRight();
+    enterState(SEEKING);
+    return;
   }
 
   // (Optional pet-me mode could be added here by counting rapid ISR taps.)
