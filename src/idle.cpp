@@ -27,14 +27,11 @@ bool idleIsActive() { return idleActive; }
 bool idleIsSleeping() { return sleeping; }
 
 static void doFidget() {
+  // Quiet idle: no motion or sounds. LED pattern handles blinky cue.
+  // Keep a lightweight timer to avoid tight-loop churn when idle.
   unsigned long now = millis();
   if (now < nextFidgetMs) return;
-  switch (random(4)) {
-    case 0: playIdleChirp(); break;
-    case 1: randomWiggle(); break;
-    case 2: turnRandomly(); break;
-    default: playPurrMelody(); break;
-  }
+  // Nudge the timer forward with a modest jitter so updateIdle() isn't hot.
   nextFidgetMs = now + 500 + (unsigned long)random(1500); // 0.5-2s
 }
 

@@ -39,7 +39,8 @@ static uint16_t lineLen = 0;
 static unsigned long last_uart_ms = 0;
 static bool linkUp = false;
 static const char* curModeState = nullptr; // edge-dedup for STATE mode telemetry
-static bool forebrainMode = false; // false=AUTONOMOUS behavior until handshake
+static bool forebrainMode = false; // managed (FOREBRAIN) after handshake
+static bool autonomousEnabled = false; // require explicit enable before running autonomous
 
 // Forward declare tx_send so helpers can log before its definition
 static void tx_send(uint8_t pri, const char* base);
@@ -534,6 +535,8 @@ void setup() {
   for (uint8_t i=0;i<MAX_RANGE_IDS;i++){ rangeValid[i]=false; rangeIds[i]=0; rangeVals[i]=NAN; }
   last_uart_ms = millis(); linkUp=false; curModeState = nullptr;
   tx_last_ms = millis(); tx_tokens = (float)param_tx_bytes_per_s; // allow initial burst
+  // Keep protocol quiet until interpreter mode; only OI bytes pass through
+  tx_paused = true;
   initLeds();
   // Enter idle sooner to keep lifelike fidgets if host stays quiet
   initIdle(60000); // 60s to idle
@@ -548,7 +551,8 @@ void setup() {
 #ifdef ENABLE_TUNES
   playStartupJingle();
 #endif
-  setLedPattern(PATTERN_GREETER_SLIDE);
+  // Quiet but blinky "waiting for midbrain connection"
+  setLedPattern(PATTERN_WAITING);
 }
 
 void loop() {
@@ -570,8 +574,14 @@ void loop() {
     keepAliveTick();
     if (now - lastTickMs >= CONTROL_DT_MS) { lastTickMs = now; controlTick(); }
   } else {
-    // AUTONOMOUS behavior governs motion
-    updateBehavior();
+    // Do not enter autonomous mode until explicitly enabled
+    if (autonomousEnabled) {
+      updateBehavior();
+    } else {
+      // Remain quiet; keep motors stopped and show waiting/idle LEDs only
+      stopAllMotors();
+      if (!idleIsActive()) setLedPattern(PATTERN_WAITING);
+    }
   }
 
   // 3) Maintain sensor stream and attempt reconnects
@@ -620,6 +630,8 @@ void enterForebrainModeFromPassthrough(uint8_t /*songId*/) {
   // Switch to FULL to allow managed motion control
   setOiModeFull();
   forebrainMode = true;
+  // Interpreter active: allow full telemetry again
+  tx_paused = false;
   publish_hello();
   publish_health_boot();
   publish_mode_state(PROTO_STATE_FOREBRAIN);
