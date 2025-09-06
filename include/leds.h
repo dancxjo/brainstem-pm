@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 // Patterns for the two on-board LEDs (e.g. RX/TX on ATmega32U4)
 enum LedPattern {

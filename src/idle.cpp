@@ -5,6 +5,9 @@
 #include "utils.h"
 #include <Arduino.h>
 
+// Declare setIdleBatteryLevel if not already declared in included headers
+void setIdleBatteryLevel(uint8_t level);
+
 static unsigned long idleTimeoutMs = 300000; // default 5 min
 static unsigned long lastUsbMs = 0;
 static bool idleActive = false;
