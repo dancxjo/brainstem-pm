@@ -257,3 +257,13 @@ bool advanceButtonPressedAndClear() {
   btnAdvEdge = false;
   return was;
 }
+
+static int battery_pct_override = -1;
+
+void setBatteryPercentOverride(int pct) { battery_pct_override = pct; }
+
+int batteryPercent() {
+  if (battery_pct_override >= 0) return battery_pct_override;
+  // TODO: query OI for real battery data
+  return 100;
+}

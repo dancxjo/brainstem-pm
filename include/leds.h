@@ -11,6 +11,7 @@ enum LedPattern {
   PATTERN_TURNING_RIGHT,
   PATTERN_FROZEN,
   PATTERN_ALERT,
+  PATTERN_IDLE,           // random asynchronous pulses
   PATTERN_SEEKING_RIGHT,   // RX slow blink, TX off
   PATTERN_BOTH_SOLID       // both LEDs solid on
 };
@@ -18,3 +19,5 @@ enum LedPattern {
 void initLeds();
 void setLedPattern(LedPattern p);
 void updateLeds();
+LedPattern getLedPattern();
+void setIdleBatteryLevel(uint8_t pct);

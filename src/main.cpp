@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <stdlib.h>
 #include "leds.h"
+#include "idle.h"
 
 #ifdef BRAINSTEM_UART
 #include "proto.h"
@@ -523,6 +524,7 @@ void setup() {
   last_uart_ms = millis(); linkUp=false; curModeState = nullptr;
   tx_last_ms = millis(); tx_tokens = (float)param_tx_bytes_per_s; // allow initial burst
   initLeds();
+  initIdle();
 }
 
 void loop() {
@@ -535,6 +537,10 @@ void loop() {
   }
 
   unsigned long now = millis();
+  bool usbUp = (now - last_uart_ms < 2000);
+  updateIdle(usbUp);
+  if (idleIsSleeping()) { updateLeds(); enforceRobotWatchdog(); return; }
+
   // 2) Keep OI alive and run control tick
   keepAliveTick();
   if (now - lastTickMs >= CONTROL_DT_MS) { lastTickMs = now; controlTick(); }
@@ -544,24 +550,25 @@ void loop() {
   static unsigned long lastReconnectMs = 0;
   if (!oiConnected() && (now - lastReconnectMs > 1000)) { pokeOI(); beginSensorStream(); lastReconnectMs = now; }
 
-  // 4) LED policy: left=robot OI, right=USB client
+  // 4) LED policy: left=robot OI, right=USB client (suppressed during idle)
   bool robotUp = oiConnected();
-  bool usbUp = (now - last_uart_ms < 2000);
-  static bool prevRobot=false, prevUsb=false; static unsigned long robotEdgeMs=0, usbEdgeMs=0;
-  if (robotUp != prevRobot) { robotEdgeMs = now; prevRobot = robotUp; }
-  if (usbUp != prevUsb) { usbEdgeMs = now; prevUsb = usbUp; }
-  const unsigned long FAST_BLINK_MS = 1000;
-  if (!robotUp) {
-    setLedPattern(PATTERN_SEEKING); // left slow, right off
-  } else if (!usbUp) {
-    setLedPattern(PATTERN_SEEKING_RIGHT); // right slow, left off
-  } else {
-    bool robotJust = (now - robotEdgeMs) < FAST_BLINK_MS;
-    bool usbJust = (now - usbEdgeMs) < FAST_BLINK_MS;
-    if (robotJust && usbJust) setLedPattern(PATTERN_ALERT); // alternate both briefly
-    else if (robotJust) setLedPattern(PATTERN_TURNING_LEFT); // left fast
-    else if (usbJust) setLedPattern(PATTERN_TURNING_RIGHT); // right fast
-    else setLedPattern(PATTERN_BOTH_SOLID); // both solid when fully up
+  if (!idleIsActive()) {
+    static bool prevRobot=false, prevUsb=false; static unsigned long robotEdgeMs=0, usbEdgeMs=0;
+    if (robotUp != prevRobot) { robotEdgeMs = now; prevRobot = robotUp; }
+    if (usbUp != prevUsb) { usbEdgeMs = now; prevUsb = usbUp; }
+    const unsigned long FAST_BLINK_MS = 1000;
+    if (!robotUp) {
+      setLedPattern(PATTERN_SEEKING); // left slow, right off
+    } else if (!usbUp) {
+      setLedPattern(PATTERN_SEEKING_RIGHT); // right slow, left off
+    } else {
+      bool robotJust = (now - robotEdgeMs) < FAST_BLINK_MS;
+      bool usbJust = (now - usbEdgeMs) < FAST_BLINK_MS;
+      if (robotJust && usbJust) setLedPattern(PATTERN_ALERT); // alternate both briefly
+      else if (robotJust) setLedPattern(PATTERN_TURNING_LEFT); // left fast
+      else if (usbJust) setLedPattern(PATTERN_TURNING_RIGHT); // right fast
+      else setLedPattern(PATTERN_BOTH_SOLID); // both solid when fully up
+    }
   }
 
   // 5) Update LEDs and watchdog

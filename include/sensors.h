@@ -21,3 +21,5 @@ bool cliffDetected();
 // If your bumper switch is wired to a GPIO, call initSensors() and this will
 // auto-attach on supported boards. The event flag can be polled in the loop.
 bool bumperEventTriggeredAndClear();
+int batteryPercent();
+void setBatteryPercentOverride(int pct);
