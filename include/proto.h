@@ -6,7 +6,7 @@
 //   RANGE,<meters>,<id>\n
 //   SET,<key>,<value> | GET,<key> | GET,evt,<eid>\n
 //   LED,<bitmask>\n
-//   <NUL> (0x00) to enter interpreter from default passthrough\n
+//   (Handshake from passthrough now triggered by OI PLAY,<HANDSHAKE_SONG>)\n
 //   PAUSE | RESUME | PASS (return to passthrough)\n
 //   REPLAY,<since_eid> | STATS\n
 // Outbound (MCU → host):

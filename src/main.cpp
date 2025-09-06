@@ -435,16 +435,7 @@ static void pollUart(bool allowHandle) {
     if (ch=='\r' || ch=='\n') {
       if (lineLen > 0) {
         lineBuf[lineLen] = '\0';
-        // First complete line acts as handshake: switch to FOREBRAIN mode
-        if (!forebrainMode) {
-          forebrainMode = true;
-          publish_hello();
-          publish_health_boot();
-          publish_mode_state(PROTO_STATE_FOREBRAIN);
-          // Enable full-speed behavior if it is used; in FOREBRAIN, controlTick is active
-          setBehaviorWanderEnabled(true);
-          setMotionSpeedScale(1.0f);
-        }
+        // In new flow, passthrough handshake selects FOREBRAIN; no implicit switch here
         if (allowHandle || forebrainMode) {
           handleLine(lineBuf);
         } else {
@@ -618,8 +609,23 @@ void loop() {
   updateLeds();
   enforceRobotWatchdog();
 
-  // Run presence late so micro-motions happen after safety/LED updates; it is self-guarded
-  updatePresence(passthroughActive(), idleIsSleeping());
+  // Run presence late so micro-motions happen after safety/LED updates
+  if (forebrainMode) {
+    updatePresence(passthroughActive(), idleIsSleeping());
+  }
+}
+
+// Transition from passthrough to managed (FOREBRAIN) mode on handshake
+void enterForebrainModeFromPassthrough(uint8_t /*songId*/) {
+  // Switch to FULL to allow managed motion control
+  setOiModeFull();
+  forebrainMode = true;
+  publish_hello();
+  publish_health_boot();
+  publish_mode_state(PROTO_STATE_FOREBRAIN);
+  setBehaviorWanderEnabled(true);
+  setMotionSpeedScale(1.0f);
+  setLedPattern(PATTERN_BOTH_SOLID);
 }
 
 #else // BRAINSTEM_UART
