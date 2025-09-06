@@ -29,6 +29,7 @@ static inline void setRx(bool on) {
 
 static LedPattern current = PATTERN_CONNECTING;
 static unsigned long patternStartMs = 0;
+static uint8_t idleBatteryLevel = 100;
 
 void initLeds() {
   // Ensure LEDs start known-off
@@ -53,6 +54,9 @@ void setLedPattern(LedPattern p) {
         case PATTERN_TURNING_RIGHT: return "TURNING_RIGHT";
         case PATTERN_FROZEN: return "FROZEN";
         case PATTERN_ALERT: return "ALERT";
+        case PATTERN_IDLE: return "IDLE";
+        case PATTERN_SEEKING_RIGHT: return "SEEKING_RIGHT";
+        case PATTERN_BOTH_SOLID: return "BOTH_SOLID";
       }
       return "?";
     };
@@ -109,6 +113,11 @@ static void patternAt(unsigned long tMs, bool &txOn, bool &rxOn) {
       txOn = (tMs % 100) < 50;
       rxOn = !txOn;
       break;
+    case PATTERN_IDLE:
+      // Random asynchronous blips scaled by battery level
+      txOn = random(100) < idleBatteryLevel;
+      rxOn = random(100) < idleBatteryLevel;
+      break;
     case PATTERN_SEEKING_RIGHT:
       // RX slow blink 1 Hz, TX off
       txOn = false;
@@ -131,3 +140,6 @@ void updateLeds() {
   setRx(rxOn);
 #endif
 }
+
+LedPattern getLedPattern() { return current; }
+void setIdleBatteryLevel(uint8_t pct) { idleBatteryLevel = pct; }
