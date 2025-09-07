@@ -33,6 +33,10 @@ static const unsigned long HEARTBEAT_MAX_MS = 12000; // 12s
 static const unsigned long POWER_PULSE_HIGH_MS = 100; // ms high for a toggle
 static const unsigned long POWER_OFF_SETTLE_MS = 1200; // ms to allow power-down
 static const unsigned long POWER_POST_DELAY_MS = 2000; // ms to allow boot after power-on
+// Polarity: many Create 1 units toggle on an active-LOW pulse. Make this configurable.
+#ifndef POWER_TOGGLE_ACTIVE_HIGH
+#define POWER_TOGGLE_ACTIVE_HIGH 0
+#endif
 
 // Metrics and connection state
 static bool g_connected = false;
@@ -47,9 +51,24 @@ static char g_ctrlBuf[16];
 static uint8_t g_ctrlLen = 0;
 
 static void pulsePowerToggle() {
-  digitalWrite(POWER_TOGGLE_PIN, HIGH);
-  delay(POWER_PULSE_HIGH_MS);
-  digitalWrite(POWER_TOGGLE_PIN, LOW);
+  // Drive the line only for the pulse; otherwise leave it high-impedance (INPUT)
+  if (POWER_TOGGLE_ACTIVE_HIGH) {
+    pinMode(POWER_TOGGLE_PIN, OUTPUT);
+    digitalWrite(POWER_TOGGLE_PIN, LOW); // known idle
+    delay(2);
+    digitalWrite(POWER_TOGGLE_PIN, HIGH); // active
+    delay(POWER_PULSE_HIGH_MS);
+    digitalWrite(POWER_TOGGLE_PIN, LOW);  // release
+    pinMode(POWER_TOGGLE_PIN, INPUT);     // tri-state
+  } else {
+    pinMode(POWER_TOGGLE_PIN, OUTPUT);
+    digitalWrite(POWER_TOGGLE_PIN, HIGH); // known idle
+    delay(2);
+    digitalWrite(POWER_TOGGLE_PIN, LOW);  // active (low pulse)
+    delay(POWER_PULSE_HIGH_MS);
+    digitalWrite(POWER_TOGGLE_PIN, HIGH); // release
+    pinMode(POWER_TOGGLE_PIN, INPUT);     // tri-state
+  }
 }
 
 static void beginRobotUart() {
@@ -145,8 +164,8 @@ static void tryConnectTick() {
 
 void setup() {
   Serial.begin(HOST_BAUD);
-  pinMode(POWER_TOGGLE_PIN, OUTPUT);
-  digitalWrite(POWER_TOGGLE_PIN, LOW);
+  // Leave power toggle line floating (INPUT) until explicitly pulsed on HELLO.
+  pinMode(POWER_TOGGLE_PIN, INPUT);
   beginRobotUart();
   g_connected = false;
   g_lastTryMs = g_lastProbeMs = g_lastRobotRxMs = millis();
