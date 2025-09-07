@@ -9,18 +9,12 @@
 // AutonomyLab create_1 drivers expect 57600 8N1 on the robot link
 static const unsigned long CREATE_BAUD = 57600;
 
-// iRobot Create Open Interface commands
-static const uint8_t OI_START   = 128;
-static const uint8_t OI_SAFE    = 131;   // not used anymore (conflicted with midbrain)
-static const uint8_t OI_FULL    = 132;   // not used in proxy-only mode
-static const uint8_t OI_SENSORS = 142;   // not used; avoid tickling robot
-
-// Simple connect/retry state
-static bool robotSeen = false;               // any bytes ever received from robot
-static bool midbrainActive = false;          // any host->robot traffic observed
-static bool startSent = false;               // sent a single OI_START after grace
-static unsigned long bootMs = 0;             // millis at setup
-static const unsigned long START_GRACE_MS = 4000; // wait before sending START once
+// iRobot Create Open Interface opcodes (subset)
+static const uint8_t OI_START   = 128; // enter passive
+static const uint8_t OI_BAUD    = 129; // set baud (1 arg)
+static const uint8_t OI_SAFE    = 131; // safe mode
+static const uint8_t OI_FULL    = 132; // full mode
+static const uint8_t OI_DRIVE_DIRECT = 145; // 4 args
 
 void setup() {
   // Host-side USB CDC: baud often ignored, but set for clarity
@@ -29,18 +23,32 @@ void setup() {
   CREATE_SERIAL.begin(CREATE_BAUD, SERIAL_8N1);
   // LEDs start off
   initLeds();
-  // Do not send anything immediately; give the midbrain a chance to init first.
-  bootMs = millis();
+  // Aggressively claim control so robot stays awake until midbrain boots.
+  // Minimal init: START -> SAFE and stop motors.
+  CREATE_SERIAL.write(OI_START);
+  CREATE_SERIAL.write(OI_SAFE);
+  CREATE_SERIAL.write(OI_DRIVE_DIRECT);
+  CREATE_SERIAL.write((uint8_t)0); CREATE_SERIAL.write((uint8_t)0); // right = 0
+  CREATE_SERIAL.write((uint8_t)0); CREATE_SERIAL.write((uint8_t)0); // left = 0
 }
 
 void loop() {
   bool toRobot = false;
   bool fromRobot = false;
+  static uint8_t discardN = 0; // bytes to discard after an intercepted opcode
   // Host -> Robot
   while (Serial.available() > 0) {
     int c = Serial.read();
     if (c < 0) break;
-    CREATE_SERIAL.write((uint8_t)c);
+    uint8_t b = (uint8_t)c;
+    // Intercept host init/reset opcodes so we don't re-init the robot
+    if (discardN > 0) { discardN--; continue; }
+    if (b == OI_START || b == OI_SAFE || b == OI_FULL) {
+      continue; // swallow
+    }
+    if (b == OI_BAUD) { discardN = 1; continue; }
+    // Normal passthrough
+    CREATE_SERIAL.write(b);
     toRobot = true;
   }
   // Robot -> Host
@@ -50,17 +58,7 @@ void loop() {
     Serial.write((uint8_t)c);
     fromRobot = true;
   }
-  if (toRobot) midbrainActive = true;
-  if (fromRobot) robotSeen = true;
-
-  // After a short grace period with no host activity, send a single OI_START
-  // to put the robot in passive OI mode without asserting SAFE/FULL.
-  unsigned long now = millis();
-  if (!startSent && !midbrainActive && (now - bootMs >= START_GRACE_MS)) {
-    CREATE_SERIAL.write(OI_START);
-    startSent = true;
-    toRobot = true;
-  }
+  // No autonomous initialization; only act as a transparent proxy.
   // LED policy: left = robot sending, right = robot receiving
   if (toRobot && fromRobot) {
     setLeds(true, true);
