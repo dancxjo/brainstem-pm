@@ -32,9 +32,10 @@ static const uint8_t OI_SAFE  = 131;
 static const uint8_t OI_SONG  = 140;
 static const uint8_t OI_PLAY  = 141;
 
-// Pre-handshake heartbeat cadence (ms)
-static const unsigned long PRE_HELLO_NOTE_MS = 30000; // 30s
-static unsigned long g_nextNoteMs = 0;
+// Pre-handshake ambient beeps (R2D2-style): spaced, gentle phrases
+static unsigned long g_nextAmbientMs = 0;   // when to play next ambient phrase
+static bool g_ambientDefined = false;       // whether ambient songs were defined on OI
+static unsigned long g_lastOiReadyMs = 0;   // last time probe returned a byte
 // Periodic OI mode assertion (START/SAFE) to catch late power-on
 static const unsigned long OI_ASSERT_MS = 1000; // 1s
 static unsigned long g_lastOiAssertMs = 0;
@@ -44,6 +45,60 @@ static const unsigned long PROBE_INTERVAL_MS = 1000;
 static unsigned long g_lastProbeMs = 0;
 // Recommended inter-opcode gap (per OI spec guidance)
 static const unsigned long OI_GAP_MS = 20;
+
+// Define a small palette of pleasant phrases (IDs 0..5)
+// 0: yawn (down then up), 1: stretch (upwards arpeggio), 2: soft warble,
+// 3: chirp-up, 4: chirp-down, 5: trill
+static void defineAmbientSongs() {
+  auto defineSong = [](uint8_t id, const uint8_t* notes, const uint8_t* durs, uint8_t count) {
+    CREATE_SERIAL.write(OI_SONG);
+    CREATE_SERIAL.write(id);
+    CREATE_SERIAL.write(count);
+    for (uint8_t i = 0; i < count; ++i) {
+      CREATE_SERIAL.write(notes[i]);
+      CREATE_SERIAL.write(durs[i]);
+    }
+    delay(OI_GAP_MS);
+  };
+
+  // Song 0: Yawn (A4..C4..G4), gentle and slow
+  {
+    const uint8_t notes[] = {69, 67, 65, 64, 62, 60, 62, 64, 65, 67};
+    const uint8_t durs[]  = {12, 12, 12, 10, 10, 10, 10, 10, 12, 14};
+    defineSong(0, notes, durs, (uint8_t)(sizeof(notes)));
+  }
+  // Song 1: Stretch (C4 E4 G4 C5 G4)
+  {
+    const uint8_t notes[] = {60, 64, 67, 72, 67};
+    const uint8_t durs[]  = {10, 10, 10, 12, 10};
+    defineSong(1, notes, durs, (uint8_t)(sizeof(notes)));
+  }
+  // Song 2: Soft warble around E5
+  {
+    const uint8_t notes[] = {76, 75, 77, 75, 76, 74};
+    const uint8_t durs[]  = {6,  6,  6,  6,  8,  8};
+    defineSong(2, notes, durs, (uint8_t)(sizeof(notes)));
+  }
+  // Song 3: Chirp up (quick, light)
+  {
+    const uint8_t notes[] = {76, 79, 83};
+    const uint8_t durs[]  = {4,  4,  6};
+    defineSong(3, notes, durs, (uint8_t)(sizeof(notes)));
+  }
+  // Song 4: Chirp down (quick, light)
+  {
+    const uint8_t notes[] = {83, 79, 76};
+    const uint8_t durs[]  = {4,  4,  6};
+    defineSong(4, notes, durs, (uint8_t)(sizeof(notes)));
+  }
+  // Song 5: Trill (gentle alternating pair)
+  {
+    const uint8_t notes[] = {79, 81, 79, 81, 79, 81};
+    const uint8_t durs[]  = {3,  3,  3,  3,  3,  6};
+    defineSong(5, notes, durs, (uint8_t)(sizeof(notes)));
+  }
+  g_ambientDefined = true;
+}
 
 static inline void oiWriteDelay(uint8_t b) {
   CREATE_SERIAL.write(b);
@@ -84,10 +139,13 @@ void setup() {
   oiWriteDelay(OI_START);
   oiWriteDelay(OI_SAFE);
   unsigned long now = millis();
-  g_nextNoteMs = now + PRE_HELLO_NOTE_MS;
+  // Schedule first ambient phrase in a few seconds
+  g_nextAmbientMs = now + 3000;
   g_lastOiAssertMs = now;
   g_lastProbeMs = now;
 }
+
+// (DTMF implementation removed in favor of friendlier tones)
 
 void loop() {
   // Host → control or passthrough
@@ -96,6 +154,16 @@ void loop() {
     if (ci < 0) break;
     uint8_t b = (uint8_t)ci;
     if (!g_hostMode) {
+      // Host began typing: ensure pleasant chirps are defined; play a light chirp per char
+      if ((millis() - g_lastOiReadyMs) < 5000 && !g_ambientDefined) {
+        defineAmbientSongs();
+      }
+      if ((millis() - g_lastOiReadyMs) < 5000 && g_ambientDefined) {
+        // Pick from chirp songs 3..5 for variation
+        uint8_t pick = (uint8_t)(3 + (random(3))); // 3,4,5
+        uint8_t play[] = { OI_PLAY, pick };
+        CREATE_SERIAL.write(play, sizeof(play));
+      }
       // Accumulate an ASCII line and look for HELLO
       if (b == '\n' || b == '\r') {
         g_ctrlBuf[g_ctrlLen < sizeof(g_ctrlBuf)-1 ? g_ctrlLen : sizeof(g_ctrlBuf)-1] = '\0';
@@ -135,7 +203,7 @@ void loop() {
       Serial.write((uint8_t)c);
     }
   } else {
-    // Pre-handshake: keep robot in SAFE and play a random single note every 30s
+    // Pre-handshake: keep robot in SAFE and occasionally play gentle phrases
     unsigned long now = millis();
     // Re-assert OI mode periodically so if the robot powers up later, we catch it
     if (now - g_lastOiAssertMs >= OI_ASSERT_MS) {
@@ -156,22 +224,21 @@ void loop() {
         if (CREATE_SERIAL.available() > 0) { (void)CREATE_SERIAL.read(); oi_ready = true; break; }
       }
       g_lastProbeMs = now;
+      if (oi_ready) g_lastOiReadyMs = now;
     }
-    if (now >= g_nextNoteMs) {
-      // Only play if OI appears responsive at least once recently
-      if (oi_ready) {
-        // Reassert SAFE in case robot state changed
-        oiWriteDelay(OI_SAFE);
-        // Pick a pleasant random note and short duration
-        const uint8_t scale[] = {60, 62, 64, 67, 69, 72}; // C D E G A C'
-        uint8_t note = scale[random((long)sizeof(scale))];
-        uint8_t dur  = (uint8_t)(8 + (random(9))); // 8..16 (1/64s)
-        uint8_t song[] = { OI_SONG, 0, 1, note, dur };
-        CREATE_SERIAL.write(song, sizeof(song));
-        uint8_t play[] = { OI_PLAY, 0 };
-        CREATE_SERIAL.write(play, sizeof(play));
-      }
-      g_nextNoteMs = now + PRE_HELLO_NOTE_MS;
+    // Define ambient songs once after OI responds
+    if (!g_ambientDefined && (now - g_lastOiReadyMs) < 5000) {
+      defineAmbientSongs();
+    }
+    // Occasionally play a gentle phrase if OI seems ready
+    if (g_ambientDefined && (now - g_lastOiReadyMs) < 5000 && now >= g_nextAmbientMs) {
+      // Choose one of the ambient songs (0..2) mostly; occasionally a chirp (3..5)
+      uint8_t base = (random(4) == 0) ? 3 : 0; // 25% pick chirp bank
+      uint8_t songId = base + (uint8_t)random(3); // 0..2 or 3..5
+      uint8_t play[] = { OI_PLAY, songId };
+      CREATE_SERIAL.write(play, sizeof(play));
+      // Next phrase in 4–9 seconds
+      g_nextAmbientMs = now + 4000 + (unsigned long)random(5000);
     }
   }
 }
