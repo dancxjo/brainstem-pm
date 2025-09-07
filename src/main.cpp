@@ -11,17 +11,16 @@ static const unsigned long CREATE_BAUD = 57600;
 
 // iRobot Create Open Interface commands
 static const uint8_t OI_START   = 128;
-static const uint8_t OI_SAFE    = 131;
-static const uint8_t OI_FULL    = 132;
-static const uint8_t OI_SENSORS = 142; // followed by packet id
+static const uint8_t OI_SAFE    = 131;   // not used anymore (conflicted with midbrain)
+static const uint8_t OI_FULL    = 132;   // not used in proxy-only mode
+static const uint8_t OI_SENSORS = 142;   // not used; avoid tickling robot
 
 // Simple connect/retry state
 static bool robotSeen = false;               // any bytes ever received from robot
-static unsigned long lastPokeMs = 0;        // last time we tried to init
-static const unsigned long POKE_PERIOD_MS = 500; // retry interval until robotSeen
 static bool midbrainActive = false;          // any host->robot traffic observed
-static unsigned long lastTickleMs = 0;       // last time we sent a sensor tickle
-static const unsigned long TICKLE_PERIOD_MS = 2000; // gentle keepalive when host quiet
+static bool startSent = false;               // sent a single OI_START after grace
+static unsigned long bootMs = 0;             // millis at setup
+static const unsigned long START_GRACE_MS = 4000; // wait before sending START once
 
 void setup() {
   // Host-side USB CDC: baud often ignored, but set for clarity
@@ -30,11 +29,8 @@ void setup() {
   CREATE_SERIAL.begin(CREATE_BAUD, SERIAL_8N1);
   // LEDs start off
   initLeds();
-  // Immediately attempt to grab control so the robot is ready, but stay SAFE
-  // to avoid conflicts with midbrain's own initialization.
-  CREATE_SERIAL.write(OI_START);
-  CREATE_SERIAL.write(OI_SAFE);
-  lastPokeMs = millis();
+  // Do not send anything immediately; give the midbrain a chance to init first.
+  bootMs = millis();
 }
 
 void loop() {
@@ -57,20 +53,12 @@ void loop() {
   if (toRobot) midbrainActive = true;
   if (fromRobot) robotSeen = true;
 
-  // While we haven't heard anything from the robot yet, keep trying to
-  // initialize and solicit a response at a gentle cadence.
+  // After a short grace period with no host activity, send a single OI_START
+  // to put the robot in passive OI mode without asserting SAFE/FULL.
   unsigned long now = millis();
-  if (!robotSeen && !midbrainActive && (now - lastPokeMs >= POKE_PERIOD_MS)) {
+  if (!startSent && !midbrainActive && (now - bootMs >= START_GRACE_MS)) {
     CREATE_SERIAL.write(OI_START);
-    CREATE_SERIAL.write(OI_SAFE);
-    lastPokeMs = now;
-    toRobot = true;
-  }
-  // Periodic sensor tickle to keep OI warm when host is quiet
-  if (!midbrainActive && (now - lastTickleMs >= TICKLE_PERIOD_MS)) {
-    CREATE_SERIAL.write(OI_SENSORS);
-    CREATE_SERIAL.write((uint8_t)7); // bump/wheeldrop; short reply
-    lastTickleMs = now;
+    startSent = true;
     toRobot = true;
   }
   // LED policy: left = robot sending, right = robot receiving
