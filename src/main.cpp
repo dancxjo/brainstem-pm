@@ -19,6 +19,9 @@ static const uint8_t OI_SENSORS = 142; // followed by packet id
 static bool robotSeen = false;               // any bytes ever received from robot
 static unsigned long lastPokeMs = 0;        // last time we tried to init
 static const unsigned long POKE_PERIOD_MS = 500; // retry interval until robotSeen
+static bool midbrainActive = false;          // any host->robot traffic observed
+static unsigned long lastTickleMs = 0;       // last time we sent a sensor tickle
+static const unsigned long TICKLE_PERIOD_MS = 2000; // gentle keepalive when host quiet
 
 void setup() {
   // Host-side USB CDC: baud often ignored, but set for clarity
@@ -27,12 +30,10 @@ void setup() {
   CREATE_SERIAL.begin(CREATE_BAUD, SERIAL_8N1);
   // LEDs start off
   initLeds();
-  // Immediately attempt to grab control so the robot is ready
-  // Send START + FULL, and probe a simple sensor to solicit a response.
+  // Immediately attempt to grab control so the robot is ready, but stay SAFE
+  // to avoid conflicts with midbrain's own initialization.
   CREATE_SERIAL.write(OI_START);
-  CREATE_SERIAL.write(OI_FULL);
-  CREATE_SERIAL.write(OI_SENSORS);
-  CREATE_SERIAL.write((uint8_t)7); // bump/wheeldrop (1 byte)
+  CREATE_SERIAL.write(OI_SAFE);
   lastPokeMs = millis();
 }
 
@@ -53,17 +54,23 @@ void loop() {
     Serial.write((uint8_t)c);
     fromRobot = true;
   }
+  if (toRobot) midbrainActive = true;
   if (fromRobot) robotSeen = true;
 
   // While we haven't heard anything from the robot yet, keep trying to
   // initialize and solicit a response at a gentle cadence.
   unsigned long now = millis();
-  if (!robotSeen && (now - lastPokeMs >= POKE_PERIOD_MS)) {
+  if (!robotSeen && !midbrainActive && (now - lastPokeMs >= POKE_PERIOD_MS)) {
     CREATE_SERIAL.write(OI_START);
-    CREATE_SERIAL.write(OI_FULL);
-    CREATE_SERIAL.write(OI_SENSORS);
-    CREATE_SERIAL.write((uint8_t)7);
+    CREATE_SERIAL.write(OI_SAFE);
     lastPokeMs = now;
+    toRobot = true;
+  }
+  // Periodic sensor tickle to keep OI warm when host is quiet
+  if (!midbrainActive && (now - lastTickleMs >= TICKLE_PERIOD_MS)) {
+    CREATE_SERIAL.write(OI_SENSORS);
+    CREATE_SERIAL.write((uint8_t)7); // bump/wheeldrop; short reply
+    lastTickleMs = now;
     toRobot = true;
   }
   // LED policy: left = robot sending, right = robot receiving
