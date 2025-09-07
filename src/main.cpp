@@ -1,4 +1,4 @@
-// Pro Micro Brainstem — HELLO/READY handshake + reboot, then passthrough
+// Pro Micro Brainstem — HELLO/READY handshake + reboot, pre-handshake Safe mode with periodic note, then passthrough
 #include <Arduino.h>
 
 #ifndef CREATE_SERIAL
@@ -29,6 +29,26 @@ static bool g_hostMode = false; // becomes true after READY
 // Minimal OI opcodes for benign init
 static const uint8_t OI_START = 128;
 static const uint8_t OI_SAFE  = 131;
+static const uint8_t OI_SONG  = 140;
+static const uint8_t OI_PLAY  = 141;
+
+// Pre-handshake heartbeat cadence (ms)
+static const unsigned long PRE_HELLO_NOTE_MS = 30000; // 30s
+static unsigned long g_nextNoteMs = 0;
+// Periodic OI mode assertion (START/SAFE) to catch late power-on
+static const unsigned long OI_ASSERT_MS = 1000; // 1s
+static unsigned long g_lastOiAssertMs = 0;
+// Lightweight probe timing
+static const unsigned long PROBE_WAIT_MS = 60; // wait up to 60ms for a sensor byte
+static const unsigned long PROBE_INTERVAL_MS = 1000;
+static unsigned long g_lastProbeMs = 0;
+// Recommended inter-opcode gap (per OI spec guidance)
+static const unsigned long OI_GAP_MS = 20;
+
+static inline void oiWriteDelay(uint8_t b) {
+  CREATE_SERIAL.write(b);
+  delay(OI_GAP_MS);
+}
 
 static void pulsePowerToggle() {
   // Drive only during pulse; tri-state otherwise to avoid unintended toggles
@@ -58,6 +78,15 @@ void setup() {
   pinMode(POWER_TOGGLE_PIN, INPUT);
   g_ctrlLen = 0;
   g_hostMode = false;
+  // Seed RNG for random note selection
+  randomSeed((unsigned long)micros());
+  // Attempt to place robot into Safe mode (no power toggle here)
+  oiWriteDelay(OI_START);
+  oiWriteDelay(OI_SAFE);
+  unsigned long now = millis();
+  g_nextNoteMs = now + PRE_HELLO_NOTE_MS;
+  g_lastOiAssertMs = now;
+  g_lastProbeMs = now;
 }
 
 void loop() {
@@ -77,9 +106,9 @@ void loop() {
           delay(POWER_OFF_SETTLE_MS);
           pulsePowerToggle();                // ON
           delay(POWER_POST_DELAY_MS);
-          // Minimal OI init to a benign state
-          CREATE_SERIAL.write(OI_START);
-          CREATE_SERIAL.write(OI_SAFE);
+          // Minimal OI init to a benign state with proper inter-opcode gap
+          oiWriteDelay(OI_START);
+          oiWriteDelay(OI_SAFE);
           // Hand over to host
           Serial.println("READY");
           g_hostMode = true;
@@ -104,6 +133,45 @@ void loop() {
       int c = CREATE_SERIAL.read();
       if (c < 0) break;
       Serial.write((uint8_t)c);
+    }
+  } else {
+    // Pre-handshake: keep robot in SAFE and play a random single note every 30s
+    unsigned long now = millis();
+    // Re-assert OI mode periodically so if the robot powers up later, we catch it
+    if (now - g_lastOiAssertMs >= OI_ASSERT_MS) {
+      // Do NOT resend START repeatedly (that would drop back to PASSIVE).
+      // Only re-assert SAFE to remain in Safe mode.
+      oiWriteDelay(OI_SAFE);
+      g_lastOiAssertMs = now;
+    }
+    // Lightweight probe occasionally to confirm OI is listening
+    bool oi_ready = false;
+    if (now - g_lastProbeMs >= PROBE_INTERVAL_MS) {
+      // Query packet 7 (one byte). If any byte comes back quickly, consider ready.
+      while (CREATE_SERIAL.available() > 0) (void)CREATE_SERIAL.read();
+      CREATE_SERIAL.write((uint8_t)142); // OI_SENSORS
+      CREATE_SERIAL.write((uint8_t)7);
+      unsigned long until = now + PROBE_WAIT_MS;
+      while (millis() < until) {
+        if (CREATE_SERIAL.available() > 0) { (void)CREATE_SERIAL.read(); oi_ready = true; break; }
+      }
+      g_lastProbeMs = now;
+    }
+    if (now >= g_nextNoteMs) {
+      // Only play if OI appears responsive at least once recently
+      if (oi_ready) {
+        // Reassert SAFE in case robot state changed
+        oiWriteDelay(OI_SAFE);
+        // Pick a pleasant random note and short duration
+        const uint8_t scale[] = {60, 62, 64, 67, 69, 72}; // C D E G A C'
+        uint8_t note = scale[random((long)sizeof(scale))];
+        uint8_t dur  = (uint8_t)(8 + (random(9))); // 8..16 (1/64s)
+        uint8_t song[] = { OI_SONG, 0, 1, note, dur };
+        CREATE_SERIAL.write(song, sizeof(song));
+        uint8_t play[] = { OI_PLAY, 0 };
+        CREATE_SERIAL.write(play, sizeof(play));
+      }
+      g_nextNoteMs = now + PRE_HELLO_NOTE_MS;
     }
   }
 }

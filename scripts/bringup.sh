@@ -74,6 +74,7 @@ brainstem_hello() {
 dev=$(detect_dev || true)
 if [[ -n "${dev:-}" ]]; then
   brainstem_hello "$dev" || exit 1
+  sleep 3
 else
   echo "[bringup] WARNING: No /dev/ttyACM* or /dev/ttyUSB* found; skipping HELLO handshake" >&2
 fi
