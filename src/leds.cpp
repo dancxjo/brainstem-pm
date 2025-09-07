@@ -156,3 +156,10 @@ void updateLeds() {
 
 LedPattern getLedPattern() { return current; }
 void setIdleBatteryLevel(uint8_t pct) { idleBatteryLevel = pct; }
+
+void setLeds(bool txOn, bool rxOn) {
+#ifdef ARDUINO
+  setTx(txOn);
+  setRx(rxOn);
+#endif
+}

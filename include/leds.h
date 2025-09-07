@@ -23,3 +23,5 @@ void setLedPattern(LedPattern p);
 void updateLeds();
 LedPattern getLedPattern();
 void setIdleBatteryLevel(uint8_t pct);
+// Directly set LED states: tx=left, rx=right
+void setLeds(bool txOn, bool rxOn);

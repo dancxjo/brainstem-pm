@@ -1,5 +1,6 @@
-// Minimal USB <-> iRobot Create 1 serial proxy
+// Minimal USB <-> iRobot Create 1 serial proxy with LED direction indicators
 #include <Arduino.h>
+#include "leds.h"
 
 #ifndef CREATE_SERIAL
 #define CREATE_SERIAL Serial1
@@ -13,20 +14,35 @@ void setup() {
   Serial.begin(CREATE_BAUD);
   // Robot-side UART
   CREATE_SERIAL.begin(CREATE_BAUD, SERIAL_8N1);
+  // LEDs start off
+  initLeds();
 }
 
 void loop() {
+  bool hostToRobot = false;
+  bool robotToHost = false;
   // Host -> Robot
   while (Serial.available() > 0) {
     int c = Serial.read();
     if (c < 0) break;
     CREATE_SERIAL.write((uint8_t)c);
+    hostToRobot = true;
   }
   // Robot -> Host
   while (CREATE_SERIAL.available() > 0) {
     int c = CREATE_SERIAL.read();
     if (c < 0) break;
     Serial.write((uint8_t)c);
+    robotToHost = true;
+  }
+  // LED policy: left = robot sending, right = robot receiving
+  if (hostToRobot && robotToHost) {
+    setLeds(true, true);
+  } else if (hostToRobot) {
+    setLeds(false, true);
+  } else if (robotToHost) {
+    setLeds(true, false);
+  } else {
+    setLeds(false, false);
   }
 }
-
